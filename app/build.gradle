@@ -1,0 +1,66 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'app.configtool'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.configtool'
+        minSdk 24
+        // ۳۳ عمداً: از ۳۴ به بعد نوع foreground-service در مانیفست اجباریه و تست‌نشده‌ست.
+        targetSdk 33
+        versionCode 1
+        versionName '1.0'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    // امضا: اگه KEYSTORE_FILE تعریف شده باشه همون؛ وگرنه workflow یک کلید می‌سازه (scripts/make_keystore.sh).
+    signingConfigs {
+        release {
+            def ks = System.getenv('KEYSTORE_FILE')
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS') ?: 'key'
+                keyPassword System.getenv('KEY_PASSWORD') ?: System.getenv('KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (System.getenv('KEYSTORE_FILE')) signingConfig signingConfigs.release
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // xray و sing-box باید از nativeLibraryDir اجرا بشن (محدودیت W^X اندروید ۱۰+)؛ پس روی گوشی استخراج بشن.
+            useLegacyPackaging = true
+            // strip کردن باینری‌های Go ممکنه خرابشون کنه
+            keepDebugSymbols += ['**/libxray.so', '**/libsingbox.so', '**/libhev-socks5-tunnel.so']
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint { abortOnError false }
+}
+
+chaquopy {
+    defaultConfig {
+        version = '3.13'                       // ۳.۱۳: سازگار با گوشی‌های ۱۶KB-page
+        buildPython System.getenv('BUILD_PYTHON') ?: 'python3'   // باید همان 3.13 باشد
+    }
+}
+
+dependencies {
+    implementation files('libs/hev-tproxy.jar')   // کلاس hev.htproxy.TProxyService (از AAR رسمی؛ scripts/fetch_binaries.sh)
+}
