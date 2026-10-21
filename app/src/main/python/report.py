@@ -59,11 +59,28 @@ def add_run(st, cfgs, blocked=0, unsupported=0, insecure=0):
             st["fails"][why] = st["fails"].get(why, 0) + 1
 
 
+def _ok_cell(x):
+    try:
+        return (isinstance(x, dict) and all(isinstance(x[f], (int, float)) for f in ("tested", "reach", "alive", "rescued"))
+                and all(isinstance(x[f], list) and len(x[f]) == 2 and all(isinstance(v, (int, float)) for v in x[f])
+                        for f in ("lat", "kbps")))
+    except KeyError:
+        return False
+
+
 def load(path):
     try:
         st = json.loads(Path(path).read_text(encoding="utf-8"))
-        if isinstance(st.get("methods"), dict):
-            return {**new_stats(), **st}
+        if isinstance(st, dict) and isinstance(st.get("methods"), dict):
+            st = {**new_stats(), **st}
+            for k in ("methods", "ports"):
+                st[k] = {a: b for a, b in (st[k].items() if isinstance(st[k], dict) else []) if isinstance(a, str) and _ok_cell(b)}
+            st["fails"] = {a: b for a, b in (st["fails"].items() if isinstance(st["fails"], dict) else [])
+                           if isinstance(a, str) and isinstance(b, int)}
+            for k in ("runs", "tested", "reach", "alive", "blocked", "unsupported", "insecure", "first", "last"):
+                if not isinstance(st.get(k), (int, float)):
+                    st[k] = 0
+            return st
     except Exception:
         pass
     return new_stats()
@@ -92,6 +109,8 @@ def group(st, part):
     """جمع‌زدن روش‌ها بر اساس پروتکل (۰)، ترنسپورت (۱) یا امنیت (۲)."""
     agg = {}
     for key, x in st["methods"].items():
+        if not (isinstance(key, str) and key.count("/") == 2 and _ok_cell(x)):  # آمار خراب/دستی‌ویرایش‌شده گزارش رو نمی‌اندازه
+            continue
         a = agg.setdefault(key.split("/")[part], _cell())
         for f in ("tested", "reach", "alive", "rescued"):
             a[f] += x[f]
