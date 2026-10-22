@@ -153,7 +153,7 @@ function render(s){S=s;const st=s.stage,c=s.connected;
  const g=$("go");g.className=st=="connected"?"on":st=="running"?"run":"";if(st!="running")cancelling=0;g.disabled=cancelling>0;
  g.textContent=cancelling?"در حال لغو…":st=="connected"?"قطع":st=="running"?"لغو":"اتصال";
  const m=$("st");if(m.textContent!=s.msg)m.textContent=s.msg;m.className=st=="error"?"err":"";
- $("sub").textContent="";$("sub2").textContent=st=="error"?"":(s.note||"");$("tgbadge").hidden=!s.tgonly;$("tgact").style.display=(st=="error"&&s.tiers&&s.tiers.tg>0&&!s.tgonly)?"block":"none";
+ $("sub").textContent="";$("sub2").textContent=st=="error"?"":((s.warn?"⚠ "+s.warn+" ":"")+(s.note||""));$("tgbadge").hidden=!s.tgonly;$("tgact").style.display=(st=="error"&&s.tiers&&s.tiers.tg>0&&!s.tgonly)?"block":"none";
  $("barw").className="bar"+(st=="running"?" on":"");$("pb").style.width=s.pct+"%";
  $("res").style.display=c?"block":"none";
  if(c)once("res",[c,s.ports],()=>{$("r-ip").textContent=c.ip||"—";$("r-ms").textContent=c.ms+" ms";$("r-n").textContent=c.n;
