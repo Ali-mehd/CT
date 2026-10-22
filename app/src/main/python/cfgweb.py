@@ -12,6 +12,11 @@ ROOT = HERE.parent
 DATA = Path(os.environ.get("CFG_DATA") or ROOT / "data")
 sys.path.insert(0, str(HERE))
 import cfgscan, cfgforge, report  # noqa: E402
+try:
+    import netprobe  # noqa: E402
+except Exception:  # بدون سنجش شبکه هم برنامه مثل قبل کار می‌کنه
+    netprobe = None
+NETP = {"net": None}  # آخرین سنجش شبکه (کوتاه‌مدت؛ با عوض‌شدن اپراتور/مودم دوباره سنجیده می‌شه)
 
 http.server.ThreadingHTTPServer.request_queue_size = 128  # پیش‌فرض ۵ است؛ چند درخواست هم‌زمان از رابط، اتصال‌ها رو رها نکنه
 
@@ -19,7 +24,7 @@ ANDROID = cfgscan.ANDROID  # CFG_ANDROID=1 را فقط پوسته‌ی اندر�
 
 SOCKS, HTTP, LOCK_PORT = 10808, 10809, 47831
 PREV, SRC_DB = DATA / "prev_proxy.json", DATA / "sources.json"
-S = dict(stage="idle", step=0, pct=0, msg="آماده‌ست", note="", log=[], connected=None, blocked=0, beat=time.time())
+S = dict(stage="idle", step=0, pct=0, msg="آماده‌ست", note="", warn="", log=[], connected=None, blocked=0, beat=time.time())
 BG, ASKING, DIRECT, CLOSING, QUITTING = [ANDROID], [False], [""], [0.0], [False]  # اندروید: بسته‌شدن صفحه برنامه را نمی‌بندد
 VPN, VPN_WANT, _PORTS = [False], [True], [False]  # VPN: تونل فعاله؛ VPN_WANT: کاربر خواسته
 RUN, CUM, STATS_FILE = report.new_stats(), report.new_stats(), DATA / "stats.json"
@@ -84,7 +89,8 @@ def restore_proxy():
         _refresh()
         PREV.unlink()
     except Exception:
-        pass
+        # فایل پشتیبان (PREV) تا موفقیت پاک نمی‌شه؛ کاربر باید بدونه تنظیم پراکسی ویندوزش برنگشته
+        S["warn"] = "بازگردانی تنظیم پراکسی ویندوز انجام نشد؛ اینترنت ممکنه کار نکنه. Settings ← Network ← Proxy رو چک کن و پراکسی رو خاموش کن."
 
 
 # ------------------------------------------------------------ دیتابیس منابع
@@ -601,6 +607,143 @@ def set_active(sel, ms=None):
             S["connected"]["ms"] = ms
 
 
+# ---- پایداری جابه‌جایی: جابه‌جایی «اختیاری» (کندی، سایت‌ها، ارتقا) فقط وقتی که اوضاع آرومه؛ قطعیِ واقعی همیشه فوراً رسیدگی می‌شه
+MIN_DWELL, FLAP_N, FLAP_WIN, FLAP_HOLD = 150, 3, 600, 900  # حداقل ماندگاری (ثانیه) | ۳ جابه‌جایی در ۱۰ دقیقه = نوسان ⇒ ۱۵ دقیقه ثابت
+SW_LOG = deque(maxlen=30)  # (زمان، دلیل)
+HOLD_UNTIL = [0.0]
+
+
+def sw_mark(reason):
+    now = time.time()
+    SW_LOG.append((now, reason))
+    if sum(1 for t, _ in SW_LOG if now - t < FLAP_WIN) >= FLAP_N:
+        HOLD_UNTIL[0] = now + FLAP_HOLD
+        say("جابه‌جایی‌های پشت‌سرهم دیده شد؛ برای پایداری تماس‌ها، ۱۵ دقیقه جابه‌جایی اختیاری متوقف شد (قطعیِ واقعی همچنان رسیدگی می‌شه).")
+    say(f"جابه‌جایی سرور: {reason}")
+
+
+def calm_ok():
+    """آیا اجازه‌ی جابه‌جایی «اختیاری» (نه قطعی واقعی) هست؟"""
+    now = time.time()
+    if now < HOLD_UNTIL[0]:
+        return False
+    return not SW_LOG or now - SW_LOG[-1][0] >= MIN_DWELL
+
+
+BENCH_STEPS = (20, 60, 180, 420)  # فاصله‌ی بازبینیِ سرورِ کنارگذاشته‌شده بعد از هر شکستِ بازبینی (ثانیه)؛ بعد از چهارمی کنار می‌ره
+FLAKY_SEC = 1800  # سروری که قطع شد و برگشت تا ۳۰ دقیقه پشت سرورهای بی‌سابقه‌ی قطعی می‌ره (ولی حذف نمی‌شه)
+
+
+def flaky(c):
+    return c.get("flaky_until", 0) > time.time()
+
+
+def bench_add(cs):
+    """سروری که از دور خارج شد ولی ممکنه هنوز خوب باشه؛ دور ریخته نمی‌شه و زود (۲۰ ثانیه بعد) و بعد با فاصله‌ی بیشتر دوباره سنجیده می‌شه."""
+    b = POOL.setdefault("bench", [])
+    have = {x["raw"] for x in b}
+    now = time.time()
+    for c in cs:
+        if c["raw"] not in have and not danger(c):
+            c.update(bench_fail=0, ok_run=0, cut_t=now, next_t=now + BENCH_STEPS[0])
+            b.append(c)
+    del b[:-20]
+
+
+def bench_step():
+    """یک دور بازبینی: سرورهایی که وقتشون رسیده (حداکثر ۴ تا) سنجیده می‌شن. فهرست سرورهای سنجیده‌شده رو برمی‌گردونه."""
+    bn = POOL.get("bench") or []
+    now = time.time()
+    cur = {c["raw"] for c in POOL["active"]}
+    due = [c for c in bn if c["raw"] not in cur and c.get("next_t", 0) <= now][:4]
+    if not due:
+        return []
+    for c, r in zip(due, check_many(due, 2, 4, 4, sites=True)):
+        now = time.time()
+        if solid(r) and sites_ok(r) and not danger(r):
+            c["ok_run"] = c.get("ok_run", 0) + 1
+            if c["ok_run"] < 2:
+                c["next_t"] = now + 25  # یک بار سالم کافی نیست؛ ۲۵ ثانیه بعد یک بار دیگه
+                continue
+            c.update(strikes=0, bench_fail=0, ok_run=0, sites=r["sites"], site_t=now, verified_at=now,
+                     success=r.get("success"), ping=r.get("ping"), flaky_until=now + FLAKY_SEC)
+            POOL.setdefault("bad", {}).pop((c["host"], c["port"]), None)
+            if c["raw"] not in {x["raw"] for x in POOL["standby"]} and len(POOL["standby"]) < 40:
+                POOL["standby"].append(c)
+            POOL["bench"] = [x for x in POOL["bench"] if x["raw"] != c["raw"]]
+        else:
+            c["ok_run"] = 0
+            c["bench_fail"] = c.get("bench_fail", 0) + 1
+            if c["bench_fail"] >= len(BENCH_STEPS):
+                POOL["bench"] = [x for x in POOL["bench"] if x["raw"] != c["raw"]]
+            else:
+                c["next_t"] = now + BENCH_STEPS[c["bench_fail"]]
+    return due
+
+
+def bench_loop(gen):
+    """سرورِ کنارگذاشته‌شده رو زود و دوباره می‌سنجه (۲۰، ۶۰، ۱۸۰، ۴۲۰ ثانیه). برای برگشت، دو بازبینیِ سالمِ پشت‌سرهم (با فاصله) لازمه
+    تا سروری که فقط یه لحظه سالم دیده شد برنگرده؛ برگشته‌ها با نشانه‌ی «ناپایدار» ۳۰ دقیقه آخر صف می‌شینن. چهار شکست = کنار گذاشته می‌شه."""
+    try:
+        while GEN[0] == gen and not STOP.is_set():
+            for _ in range(5):
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                time.sleep(1)
+            if S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
+                continue
+            bench_step()
+    except Exception:
+        pass
+
+
+def link_state(hist, fails):
+    """وضع لینک از روی نمونه‌های اخیرِ پینگ (None = بی‌جواب): good | jittery | lossy | cut.
+    cut: سه نمونه‌ی آخر همگی بی‌جواب (قطعِ کامل، نه نوسان). lossy: نیمی از ۱۲ نمونه‌ی آخر یا بیشتر بی‌جواب. jittery: جواب می‌ده ولی پینگ خیلی می‌پره
+    یا ۲۵٪ بی‌جواب. فقط روی ≥۶ نمونه قضاوت می‌کنه؛ کمتر از اون «good»."""
+    h = list(hist)[-12:]
+    if fails >= 3 and len(h) >= 3 and all(x is None for x in h[-3:]):
+        return "cut"
+    if len(h) < 6:
+        return "good"
+    ok = sorted(x for x in h if x)
+    loss = 1 - len(ok) / len(h)
+    if loss >= 0.5:
+        return "lossy"
+    if len(ok) >= 6:
+        med, p90 = ok[len(ok) // 2], ok[min(len(ok) - 1, int(len(ok) * 0.9))]
+        if p90 >= 3 * med and p90 - med >= 300:
+            return "jittery"
+    return "jittery" if loss >= 0.25 else "good"
+
+
+def server_cut_confirmed():
+    """قطعِ کامل ثابت‌شده: اینترنتِ خودت وصله (کنترل) ولی هیچ‌کدوم از سرورهای فعال دو بار پشت‌سرهم روی TCP جواب ندادن.
+    برای پروتکل‌های UDP (hysteria2/tuic) TCP معنی نداره؛ همیشه False (منتظر شمارش عادی می‌مونه)."""
+    act = list(POOL.get("active") or [])
+    if not act or any(c.get("proto") in ("hysteria2", "tuic") for c in act):
+        return False
+    targets = []
+    for c in act:  # فقط IPِ تأییدشده‌ی همون سرور (همونی که تونل بهش وصله)؛ نام میزبان دوباره resolve نمی‌شه (DNS rebinding)
+        try:
+            ip = ipaddress.ip_address(c.get("ip") or "")
+            if cfgscan.non_public(ip):
+                return False
+            targets.append((str(ip), int(c["port"])))
+        except (ValueError, TypeError, KeyError):
+            return False  # IP تأییدشده نداریم؛ به شمارش عادیِ خطاها برمی‌گردیم
+    for i in range(2):
+        for t in targets:
+            try:
+                socket.create_connection(t, 2.0).close()
+                return False  # سرور هنوز به اتصال جواب می‌ده؛ مشکل از مسیر/تونله، نه قطعِ سرور
+            except OSError:
+                pass
+        if i == 0:
+            time.sleep(0.5)
+    return net_up()
+
+
 def failover(gen, profile, sysproxy, mode):
     with SWITCH:
         return _failover(gen, profile, sysproxy, mode)
@@ -609,14 +752,24 @@ def failover(gen, profile, sysproxy, mode):
 def _failover(gen, profile, sysproxy, mode):
     """فقط وقتی واقعاً قطع/ضعیف شده: سرور جایگزین رو با تست دقیق (چند نمونه) انتخاب می‌کنه."""
     t0 = time.time()
-    S["note"] = "اتصال قطع یا ضعیف شد؛ در حال انتخاب سرور جایگزین با تست دقیق ..."
     bad = POOL.setdefault("bad", {})
+    if not [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < time.time()]:
+        try:
+            ms = probe(2.0)
+        except Exception:
+            ms = None
+        if ms:  # جایگزینی نداریم ولی سرور فعلی هنوز (ضعیف) جواب می‌ده: همین‌جا می‌مونیم و هم‌زمان دنبال سرور تازه می‌گردیم
+            POOL["refill_fast"] = time.time() + 300
+            S["note"] = "سرور جایگزین آماده نیست؛ به همین سرور وصل موندم و در پس‌زمینه دنبال سرور جدید می‌گردم."
+            return
+    S["note"] = "اتصال قطع یا ضعیف شد؛ در حال انتخاب سرور جایگزین با تست دقیق ..."
+    bench_add(POOL["active"])  # ممکنه فقط یه لحظه قطع شده باشه؛ بعداً دوباره سنجیده و اگه سالم بود برمی‌گرده صف
     for c in POOL["active"]:
         c["strikes"] = c.get("strikes", 0) + 1
         bad[(c["host"], c["port"])] = time.time() + 600  # تا ۱۰ دقیقه برنمی‌گرده سراغش
     rest = [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < time.time()]
     fresh = time.time() - 90
-    rest.sort(key=lambda c: (not sites_ok(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
+    rest.sort(key=lambda c: (not sites_ok(c), flaky(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
     tried = set()
     for _ in range(3):  # مسیر سریع: جایگزینی که همین چند ثانیه‌ی پیش کاملاً سالم بوده؛ سلامتش بعد از اتصال دوباره با ترافیک واقعی چک می‌شه
         if GEN[0] != gen or STOP.is_set():
@@ -636,6 +789,7 @@ def _failover(gen, profile, sysproxy, mode):
             POOL["switches"] += 1
             POOL["sites"] = None
             save_good(sel)
+            sw_mark("قطع/ضعف شدید سرور قبلی")
             S.update(msg="وصل شدی ✓", note=f"جابه‌جایی خودکار انجام شد ({time.time() - t0:.1f} ثانیه)")
             threading.Thread(target=sites_guard, args=(gen, profile, []), daemon=True).start()
             return
@@ -660,6 +814,7 @@ def _failover(gen, profile, sysproxy, mode):
             POOL["switches"] += 1
             POOL["sites"] = None
             save_good(sel)
+            sw_mark("قطع/ضعف شدید سرور قبلی")
             S.update(msg="وصل شدی ✓", note=f"جابه‌جایی خودکار انجام شد ({time.time() - t0:.1f} ثانیه)")
             threading.Thread(target=sites_guard, args=(gen, profile, []), daemon=True).start()
             return
@@ -677,7 +832,7 @@ def upgrade_check(gen, profile, hist):
 def _upgrade_check(gen, profile, hist):
     """ارتقای نادر و محتاطانه: فقط اگه سرور فعلی مدت‌ها کنده و جایگزین پایدارِ واضحاً بهتری هست. با بازگشت خودکار."""
     ok = sorted(h for h in hist if h)
-    if len(ok) < 10:
+    if len(ok) < 10 or not calm_ok():
         return
     med = ok[len(ok) // 2]
     if med < 400:
@@ -692,6 +847,7 @@ def _upgrade_check(gen, profile, hist):
     if ms and ms < 0.8 * med:
         POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
         set_active(sel, ms)
+        sw_mark("ارتقا به سرور پایدارتر (فعلی مدت‌ها کند بود)")
         S["note"] = "به یه سرور پایدارتر ارتقا یافت."
     else:
         start_xray(prev, profile)  # بهتر نبود؛ برگرد
@@ -734,7 +890,7 @@ def refill(gen, profile, seen):
     """وقتی وصلی، آروم و پیوسته جایگزین‌های تازه و تست‌شده می‌سازه تا لیست آماده هیچ‌وقت خالی نشه."""
     last_fetch, P = time.time(), cfgforge.PROFILES[profile]
     while GEN[0] == gen and S["stage"] == "connected" and not STOP.is_set():
-        time.sleep(40)
+        time.sleep(10 if POOL.get("refill_fast", 0) > time.time() else 40)  # سرور فعلی ضعیفه و جایگزین نداریم: سریع‌تر دنبال جایگزین بگرد
         if GEN[0] != gen or S["stage"] != "connected" or len(POOL["standby"]) >= 14:
             continue
         batch = [POOL["backlog"].pop(0) for _ in range(min(8, len(POOL["backlog"])))]
@@ -774,7 +930,7 @@ def refill(gen, profile, seen):
 
 
 def supervisor(gen, profile, sysproxy, mode):
-    hist, fails = deque(maxlen=45), 0
+    hist, fails, warned = deque(maxlen=45), 0, False
     t_switch = t_eval = t_ref = time.time()
     while GEN[0] == gen and S["stage"] == "connected":
         time.sleep(0.5 if (mode == "fast" or fails) else random.uniform(2.0, 4.0))  # سالم: کم‌تعداد و نامنظم؛ مشکوک: سریع‌تر
@@ -797,16 +953,28 @@ def supervisor(gen, profile, sysproxy, mode):
         if mode == "off":
             continue
         okr = [h for h in hist if h]
-        soft = mode == "stable" and len(hist) >= 30 and time.time() - t_switch > 60 and len(okr) / len(hist) < 0.6
-        if (fails >= 3 or soft) and not dead and not net_up():
+        lk = link_state(hist, fails)
+        if lk in ("jittery", "lossy") and not S.get("warn"):
+            S["warn"] = "نوسان" if lk == "jittery" else "افت"
+            S["warn"] = f"{S['warn']} شدید در اتصال فعلی؛ تا قطعِ کامل سرور عوض نمی‌شه."
+            warned = True
+        elif lk == "good" and warned and (S.get("warn") or "").endswith("عوض نمی‌شه."):
+            S["warn"], warned = "", False
+        FAILN = 5 if mode == "stable" else 3  # حالت هوشمند: ۵ خطای پشت‌سرهم (≈۱۵–۲۰ ثانیه)، نه ۳ تا؛ خطای لحظه‌ای تماس رو قطع نکنه
+        soft = (mode == "stable" and len(hist) >= 30 and time.time() - t_switch > 60 and len(okr) / len(hist) < 0.6
+                and calm_ok())
+        if (fails >= FAILN or soft) and not dead and not net_up():
             S["note"] = "اینترنتِ خودت قطعه؛ سرور رو عوض نمی‌کنم و منتظر برگشتنش می‌مونم."
             fails = 2  # به‌محض برگشتن اینترنت، دوباره بسنجه
             hist.clear()
             time.sleep(5)
             continue
-        if (dead or fails >= 3 or soft) and RUNNING[0] and not POOL["standby"]:
+        cut_now = False
+        if not dead and not (fails >= FAILN or soft) and fails >= 3 and POOL["standby"] and lk == "cut":
+            cut_now = server_cut_confirmed()  # قطعِ کامل و ثابت‌شده: منتظر ۵ خطا نمی‌مونیم
+        if (dead or fails >= FAILN or soft or cut_now) and RUNNING[0] and not POOL["standby"]:
             continue  # هنوز جستجوی اول در حال اجراست و جایگزینی نداریم؛ چند لحظه‌ی دیگه دوباره
-        if dead or fails >= 3 or soft:
+        if dead or fails >= FAILN or soft or cut_now:
             failover(gen, profile, sysproxy, mode)
             hist.clear()
             fails, t_switch = 0, time.time()
@@ -897,7 +1065,7 @@ def site_tiers(cache):
 # فقط روی همین دستگاه و بدون اینترنت. به‌جای آدرس سرورها، فقط شمارنده‌ی ویژگی‌ها نگه داشته می‌شه
 # (پروتکل، ترنسپورت، پورت، بازه‌ی ساعت، آدرس منبع عمومی) تا برنامه یاد بگیره روی شبکه‌ی تو چی جواب می‌ده.
 LEARN_FILE = DATA / "learn.json"
-LEARN = {"f": {}, "s": {}, "runs": 0, "disc_t": 0.0, "disc_ok": True}  # f=تجربه‌ی خوب/بد  s=تجربه‌ی امنیتی (خطرناک بودن)  # f[ویژگی] = [تست‌شده، سالم، تست‌سایت، پاس‌سایت]
+LEARN = {"f": {}, "s": {}, "a": {}, "runs": 0, "disc_t": 0.0, "disc_ok": True}  # f=تجربه‌ی خوب/بد  s=تجربه‌ی امنیتی (خطرناک بودن)  # f[ویژگی] = [تست‌شده، سالم، تست‌سایت، پاس‌سایت]
 _learn_lock = threading.Lock()
 _learn_state = {"dirty": False, "saved": 0.0}
 PORTS_COMMON = (443, 80, 8443, 2053, 2083, 2087, 2096, 8080, 8880)
@@ -905,6 +1073,25 @@ LEARN_PRIOR = 0.25  # ویژگی‌ای که هنوز تجربه‌ای ازش �
 
 
 LEARN_MAX_KEYS = 5000
+# ---- یادگیری «به‌تفکیک شبکه» (اپراتور/مودم): ASN خودکار تشخیص داده می‌شه؛ از کاربر چیزی پرسیده نمی‌شه.
+# تجربه‌ی هر شبکه جدا نگه داشته می‌شه و کم‌کم (نیمه‌عمر) فراموش می‌شه؛ تجربه‌ی کلی فقط به‌عنوان «پیش‌فرضِ» شبکه‌ی ناشناس/تازه عمل می‌کنه.
+LEARN_NETS_MAX, LEARN_NET_KEYS, LEARN_M = 8, 400, 4.0
+HALF_DEF, HALF_T, HALF_U = 24 * 3600, 4 * 3600, 12 * 3600  # ساختاری ۲۴ ساعت | ساعت‌روز ۴ ساعت | منبع ۱۲ ساعت
+NETID = [""]  # شناسه‌ی شبکه‌ی «همین اجرا»؛ تا سنجش تموم نشده خالیه (تجربه‌ی شبکه‌ی قبلی به این شبکه نسبت داده نشه)
+_streak = {}
+
+
+def net_key():
+    return NETID[0]
+
+
+def _hl(k):
+    return HALF_T if k[:1] == "t" else HALF_U if k[:1] == "u" else HALF_DEF
+
+
+def _decayed(v, k, now):
+    f = 0.5 ** (max(0.0, now - v[4]) / _hl(k))
+    return [v[0] * f, v[1] * f, v[2] * f, v[3] * f]
 
 
 def _learn_vec(v):
@@ -945,6 +1132,23 @@ def learn_load():
                         and v[1] <= v[0]):
                     sd[str(k)[:160]] = [float(v[0]), float(v[1])]
             LEARN["s"] = sd
+            a, now = {}, time.time()
+            for nk, nv in (d.get("a") or {}).items() if isinstance(d.get("a"), dict) else []:
+                if len(a) >= LEARN_NETS_MAX or not re.fullmatch(r"a:[0-9a-f]{10}", str(nk)) or not isinstance(nv, dict):
+                    continue
+                ks = {}
+                for k, v in (nv.get("k") or {}).items() if isinstance(nv.get("k"), dict) else []:
+                    if len(ks) >= LEARN_NET_KEYS or not isinstance(v, list) or len(v) < 5:
+                        continue
+                    x = _learn_vec(v)
+                    try:
+                        ts = float(v[4])
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if x is not None and math.isfinite(ts) and 0 < ts <= now + 86400:
+                        ks[str(k)[:160]] = x + [ts]
+                a[str(nk)] = {"last": min(now, float(nv.get("last", 0)) if isinstance(nv.get("last"), (int, float)) and math.isfinite(nv.get("last")) else 0.0), "k": ks}
+            LEARN["a"] = a
             runs, dt = d.get("runs", 0), d.get("disc_t", 0)
             LEARN["runs"] = int(runs) if isinstance(runs, (int, float)) and math.isfinite(runs) and 0 <= runs <= 10 ** 9 else 0
             LEARN["disc_t"] = float(dt) if isinstance(dt, (int, float)) and math.isfinite(dt) and 0 <= dt <= 4e9 else 0.0
@@ -958,7 +1162,7 @@ def learn_save(force=False):
         return
     try:
         with _learn_lock:
-            data = json.dumps({"v": 1, "runs": LEARN["runs"], "f": LEARN["f"], "s": LEARN["s"], "disc_t": LEARN["disc_t"], "disc_ok": LEARN["disc_ok"]}, ensure_ascii=False)
+            data = json.dumps({"v": 1, "runs": LEARN["runs"], "f": LEARN["f"], "s": LEARN["s"], "a": LEARN["a"], "disc_t": LEARN["disc_t"], "disc_ok": LEARN["disc_ok"]}, ensure_ascii=False)
             _learn_state.update(dirty=False, saved=time.time())
         DATA.mkdir(parents=True, exist_ok=True)
         _atomic(LEARN_FILE, data)
@@ -968,7 +1172,7 @@ def learn_save(force=False):
 
 def learn_reset():
     with _learn_lock:
-        LEARN["f"], LEARN["s"], LEARN["runs"] = {}, {}, 0
+        LEARN["f"], LEARN["s"], LEARN["a"], LEARN["runs"] = {}, {}, {}, 0
         _learn_state["dirty"] = False
         BAD["h"].clear()
         _bad_state["dirty"] = False
@@ -998,7 +1202,11 @@ def learn_keys(c):
 def learn_record(c, kind):
     """kind='live': آیا این سرور اصلاً کار کرد؟  kind='site': (فقط برای سالم‌ها) آیا همه‌ی سایت‌های لازم رو باز کرد؟"""
     try:
+        now, nk = time.time(), net_key()
+        pred = learn_score(c, True) if (nk and kind == "live") else 0.0  # پیش‌بینی قبل از ثبت (برای تشخیص تغییر شرایط)
         with _learn_lock:
+            if nk:
+                _record_local(c, kind, nk, now, pred)
             for k in learn_keys(c):
                 if k not in LEARN["f"] and len(LEARN["f"]) >= LEARN_MAX_KEYS:  # حافظه و فایل بی‌حد رشد نکنن
                     continue
@@ -1017,16 +1225,58 @@ def learn_record(c, kind):
         pass
 
 
-def learn_score(c):
+def _record_local(c, kind, nk, now, pred):
+    a = LEARN["a"]
+    if nk not in a:
+        if len(a) >= LEARN_NETS_MAX:  # قدیمی‌ترین شبکه کنار می‌ره
+            a.pop(min(a, key=lambda x: a[x].get("last", 0)), None)
+        a[nk] = {"last": now, "k": {}}
+    n = a[nk]
+    n["last"] = now
+    ks = n["k"]
+    if kind == "live":  # تغییر شرایط: چند سرورِ «امیدوارکننده» پشت‌سرهم شکست = تجربه‌ی قبلی این شبکه دیگه معتبر نیست؛ سریع‌تر فراموش کن
+        if pred >= 0.5:
+            _streak[nk] = 0 if c.get("alive") else _streak.get(nk, 0) + 1
+            if _streak[nk] >= 4:
+                _streak[nk] = 0
+                for kk, vv in ks.items():
+                    vv[:4] = [x * 0.25 for x in vv[:4]]
+    for k in learn_keys(c):
+        v = ks.get(k)
+        if v is None:
+            if len(ks) >= LEARN_NET_KEYS:
+                ks.pop(min(ks, key=lambda x: ks[x][4]), None)
+            v = ks[k] = [0.0, 0.0, 0.0, 0.0, now]
+        v[:4] = _decayed(v, k, now)
+        v[4] = now
+        if kind == "live":
+            v[0] += 1
+            v[1] += 1 if c.get("alive") else 0
+        else:
+            v[2] += 1
+            v[3] += 1 if sites_ok(c) else 0
+
+
+def learn_score(c, alive_only=False):
     """احتمال تخمینی اینکه این سرور هم کار کنه هم سایت‌های لازم رو باز کنه (۰ تا ۱)."""
     ar, sr, rk = [], [], []
     f, sec = LEARN["f"], LEARN["s"]
+    nk, now = net_key(), time.time()
+    loc = LEARN["a"].get(nk, {}).get("k", {}) if nk else {}
     for k in learn_keys(c):
         v = f.get(k)
-        ar.append((v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR)
-        sr.append((v[3] + 1) / (v[2] + 4) if v else LEARN_PRIOR)
+        ga = (v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR  # کلی = پیش‌فرض شبکه‌ی تازه
+        gs = (v[3] + 1) / (v[2] + 4) if v else LEARN_PRIOR
+        lv = loc.get(k)
+        if lv:  # تجربه‌ی همین شبکه (با نیمه‌عمر) بر پیش‌فرض کلی غالب می‌شه؛ با داده‌ی کم به کلی نزدیکه (shrinkage)
+            d = _decayed(lv, k, now)
+            ga, gs = (d[1] + LEARN_M * ga) / (d[0] + LEARN_M), (d[3] + LEARN_M * gs) / (d[2] + LEARN_M)
+        ar.append(ga)
+        sr.append(gs)
         d = sec.get(k)  # ویژگی‌های عمومی (مثلاً tls یا پورت ۴۴۳) بین همه‌ی سرورها مشترکن؛ پس میانگین می‌گیریم تا ویژگی‌های اختصاصی تعیین‌کننده باشن
         rk.append(d[1] / (d[0] + 10) if d and d[0] >= 8 else 0.0)
+    if alive_only:
+        return sum(ar) / len(ar)
     risk = sum(rk) / len(rk)
     return (sum(ar) / len(ar)) * (sum(sr) / len(sr)) * (1 - min(0.9, risk * 2))  # الگوی بارها خطرناک‌شده امتیازش پایین میاد
 
@@ -1073,7 +1323,7 @@ BAD_FILE = DATA / "bad.json"
 BAD = {"salt": "", "h": {}}  # h[هش] = [تا چه زمانی، تعداد شکست پشت‌سرهم، نوع]
 _bad_state = {"dirty": False, "saved": 0.0}
 _bad_lock = threading.Lock()
-BAD_HOURS = {"dead": (2, 12, 48, 168), "sites": (0, 3, 12, 48, 168), "danger": (720,)}  # شکست اول سایت‌ها هنوز قرنطینه نیست (شاید کندی لحظه‌ای بوده)
+BAD_HOURS = {"dead": (0, 6, 24, 72, 168), "sites": (0, 3, 12, 48, 168), "danger": (24, 720)}  # شکست اول قرنطینه نیست (کندی یا قطعی لحظه‌ای)؛ شکست پشت‌سرهم مدت رو بیشتر می‌کنه
 BAD_EXPLORE = 0.05  # ۵٪ اوقات سرور قرنطینه‌شده (به‌جز خطرناک‌ها) دوباره امتحان می‌شه؛ شاید درست شده باشه
 
 
@@ -1113,18 +1363,20 @@ def bad_save(force=False):
         pass
 
 
-def bad_key(c):
-    raw = f"{BAD['salt']}|{c.get('host')}|{c.get('port')}|{c.get('proto')}"
+def bad_key(c, scoped=False):
+    """scoped=True: کلید مخصوص «همین شبکه» (اپراتور/مودم) برای شکست‌های وابسته به شبکه (dead/sites)؛ «خطرناک» بودن ویژگی خود سروره و سراسریه."""
+    ctx = f"|{NETID[0]}" if scoped and NETID[0] else ""
+    raw = f"{BAD['salt']}|{c.get('host')}|{c.get('port')}|{c.get('proto')}{ctx}"
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def bad_mark(c, kind):
     """یک شکست ثبت می‌کنه (kind: dead | sites | danger)."""
     try:
-        k, now = bad_key(c), time.time()
+        k, now = bad_key(c, kind != "danger"), time.time()
         with _bad_lock:
             e = BAD["h"].get(k)
-            strikes = (e[1] if e and e[2] != "danger" else 0) + 1
+            strikes = (e[1] if e and (e[2] != "danger" or kind == "danger") else 0) + 1
             hrs = BAD_HOURS[kind]
             BAD["h"][k] = [now + hrs[min(strikes, len(hrs)) - 1] * 3600, strikes, kind]
             _bad_state["dirty"] = True
@@ -1136,7 +1388,7 @@ def bad_mark(c, kind):
 def bad_clear(c, *kinds):
     """سرور این بار خوب بود؛ شکست‌های قبلیِ این نوع بخشیده می‌شن (خطرناک‌ها هیچ‌وقت بخشیده نمی‌شن)."""
     try:
-        k = bad_key(c)
+        k = bad_key(c, True)
         with _bad_lock:
             e = BAD["h"].get(k)
             if e and e[2] in kinds:
@@ -1148,10 +1400,39 @@ def bad_clear(c, *kinds):
 
 def bad_skip(c):
     """این سرور الان در قرنطینه‌ست؟ (خطرناک‌ها همیشه؛ بقیه به‌جز ۵٪ اکتشاف)"""
-    e = BAD["h"].get(bad_key(c))
-    if not e or time.time() >= e[0]:
+    now = time.time()
+    g = BAD["h"].get(bad_key(c))
+    if g and g[2] == "danger" and now < g[0]:
+        return True  # خطرناک: سراسری، بدون اکتشاف
+    e = BAD["h"].get(bad_key(c, True))  # مرده/سایت‌ها: فقط برای همین شبکه (روی مودم مرده بود، روی نت همراه شاید نه)
+    if not e or e[2] == "danger" or now >= e[0]:
         return False
-    return e[2] == "danger" or random.random() > BAD_EXPLORE
+    return random.random() > BAD_EXPLORE
+
+
+def _commit_bad(pend):
+    """نتیجه‌ی یک اسکن کامل رو در حافظه‌ی بد ثبت می‌کنه، به‌جز وقتی خود شبکه مشکوک بوده:
+    اسکن لغوشده؛ هیچ سروری جواب نداده (قطعی اینترنت یا فیلتر کامل، نه ۴۰ سرور خراب هم‌زمان)؛ یا بیشتر سرورها «خطرناک» شدن
+    (شبکه‌ی دستکاری‌کننده یا پورتال ورود، نه صدها سرور مخرب). در این حالت‌ها هیچ سروری به‌خاطر این اسکن بد حساب نمی‌شه."""
+    try:
+        n = len(pend)
+        if STOP.is_set() or n == 0:
+            return
+        ok = sum(1 for _, k in pend if k == "ok")
+        dang = sum(1 for _, k in pend if k == "danger")
+        outage = ok == 0 and n >= 5
+        interference = dang >= 10 and dang / n > 0.5
+        for c, k in pend:
+            if k == "ok":
+                bad_clear(c, "dead")
+                sec_record(c, False)
+            elif k == "danger" and not interference:
+                bad_mark(c, "danger")
+                sec_record(c, True)
+            elif k == "dead" and not outage:
+                bad_mark(c, "dead")
+    except Exception:
+        pass
 
 
 def sec_record(c, dangerous):
@@ -1291,8 +1572,6 @@ def sites_pick(found, cache):
                     bad_clear(r, "dead", "sites")
                 else:
                     bad_mark(r, "sites")
-            else:
-                bad_mark(r, "dead")
     live_ = [r for r in list(cache.values()) if r.get("alive") and not danger(r)]
     return sorted([r for r in live_ if sites_ok(r)], key=lambda r: (-sites_score(r), ping_key(r)))[:8]
 
@@ -1353,12 +1632,19 @@ def sites_watch(gen, profile, found):
             POOL["sites"] = r
             if sites_ok({"sites": r}):
                 continue
-            time.sleep(6)  # یک کندی یا خطای لحظه‌ای نباید جابه‌جایی بسازه؛ دوباره می‌سنجیم
-            if GEN[0] != gen or STOP.is_set():
-                return
-            r = cfgscan.site_check(SOCKS, 5)
-            POOL["sites"] = r
-            if not sites_ok({"sites": r}):
+            if not calm_ok():
+                continue  # تازه جابه‌جا شده‌ایم یا در حالت نوسان‌گیریم؛ سرور کار می‌کنه، تماس رو قطع نکن
+            bad_n = 1
+            for _ in range(2):  # یک کندی یا خطای لحظه‌ای نباید جابه‌جایی بسازه؛ سه بار پشت‌سرهم (فاصله‌ی ~۸ ثانیه) باید خراب باشه
+                time.sleep(8)
+                if GEN[0] != gen or STOP.is_set():
+                    return
+                r = cfgscan.site_check(SOCKS, 5)
+                POOL["sites"] = r
+                if sites_ok({"sites": r}):
+                    break
+                bad_n += 1
+            if bad_n >= 3:
                 sites_guard(gen, profile, found)
     except Exception:
         pass
@@ -1394,15 +1680,18 @@ def _sites_guard(gen, profile, found):
                     if GEN[0] != gen or STOP.is_set():
                         return
                     prev = list(POOL["active"])
+                    closed_txt = _closed(POOL.get("sites"))
                     sel = start_xray([best], profile)
                     ms = probe_retry(2, 3)
                     if not ms:
                         start_xray(prev, profile)
                         continue
                     set_active(sel, ms)
+                    bench_add(prev)  # این سرور هنوز کار می‌کنه (فقط بعضی سایت‌ها نه)؛ دور ریخته نمی‌شه
                     POOL["switches"] += 1
                     POOL["sites"] = best["sites"]
                     save_good(sel)
+                    sw_mark(f"سرور قبلی {closed_txt or 'بعضی سایت‌ها'} رو باز نمی‌کرد")
                 S.update(msg="وصل شدی ✓", note=f"به سروری وصل شدی که {_want()} رو باز می‌کنه")
                 return
             if rnd < 2:
@@ -1575,6 +1864,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
     mode = failover_on if failover_on in ("stable", "fast", "off") else ("stable" if failover_on else "off")
     failover_on = mode != "off"
     held = [False]
+    pend = []  # نتیجه‌ی تست‌ها برای ثبت در حافظه‌ی «بد»، آخر اسکن
     RUNNING[0] += 1
     try:
         STOP.clear()
@@ -1607,6 +1897,36 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         ex = ThreadPoolExecutor(max_workers=sp["workers"])
         found, connected, fails, t0, t_first = [], [False], [0], time.time(), [None]
         fetch_done = threading.Event()
+        net, net_evt, clock = [None], threading.Event(), [False]
+        NETID[0] = ""  # شبکه‌ی این اجرا هنوز مشخص نیست (ممکنه سیم‌کارت/مودم عوض شده باشه)
+        if level == 1 and cycle == 0:
+            S["warn"] = ""
+
+        def probe_net():
+            """شبکه رو می‌سنجه (کدوم پورت/UDP/QUIC/فیلتر SNI/ساعت). فقط ترتیب و حذف‌های «قطعی» رو تغییر می‌ده؛ نتیجه‌ی نامطمئن (unknown) هیچ اثری نداره."""
+            try:
+                if netprobe is None or os.environ.get("CFG_NETPROBE") == "0" or load_settings().get("netprobe") is False:
+                    return
+                old = NETP["net"]
+                r = old if (old and level == 1 and time.time() - old["t"] < 120) else netprobe.probe(STOP.is_set)
+                if not r or not r.get("net_ok"):
+                    return
+                NETP["net"], net[0] = r, r
+                NETID[0] = "a:" + hashlib.sha256(r["asn"].encode()).hexdigest()[:10] if r.get("asn") else ""
+                sc = netprobe.timeout_scale(r)
+                if sc > 1:
+                    tmo[0], tmo[1] = min(tmo[0] * sc, 9), min(tmo[1] * sc, 18)
+                say(netprobe.summary_fa(r))
+                if netprobe.clock_bad(r):
+                    clock[0] = True
+                    S["warn"] = netprobe.clock_msg_fa(r)
+                    say(S["warn"])
+            except Exception:
+                pass
+            finally:
+                net_evt.set()
+
+        threading.Thread(target=probe_net, daemon=True).start()
 
         def work(c):
             try:
@@ -1631,16 +1951,11 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         try_variants(c, xray, tmo[1])
                 c["tested"] = True
             finally:
-                if c.get("tested"):
+                if c.get("tested") and not clock[0]:  # ساعت غلط = نتیجه‌ی تست قابل‌اعتماد نیست؛ چیزی یاد گرفته/قرنطینه نشه
                     learn_record(c, "live")
-                    if danger(c):  # tls_verify_fail / tamper؛ ۳۰ روز دوباره تست نمی‌شه و الگوش امتیاز منفی می‌گیره
-                        bad_mark(c, "danger")
-                        sec_record(c, True)
-                    elif c.get("alive"):
-                        bad_clear(c, "dead")
-                        sec_record(c, False)
-                    else:
-                        bad_mark(c, "dead")
+                    # نتیجه فقط جمع می‌شه؛ آخر اسکن و فقط اگه شبکه سالم بوده ثبت می‌شه (_commit_bad). قطعی اینترنت یا شبکه‌ی دستکاری‌کننده
+                    # نباید سرورهای سالم رو قرنطینه کنه.
+                    pend.append((c, "danger" if danger(c) else "ok" if c.get("alive") else "dead"))
                 q.put(c)
 
         add_lock, old_lock, old_added, ended = threading.Lock(), threading.Lock(), [False], [False]
@@ -1652,6 +1967,9 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         def _add(links, tag):
             if STOP.is_set() or ended[0]:
                 return
+            if tag in ("net", "cache", "snap"):
+                net_evt.wait(6)  # لیست‌های بزرگ بعد از سنجش شبکه مرتب می‌شن؛ حداکثر ۶ ثانیه صبر
+            nt = net[0]
             parsed = []
             for l in links:
                 if l in seen:
@@ -1679,12 +1997,17 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 if "insecure_cert" in c["flags"]:
                     skip["insecure"] += 1
                     continue
+                if nt and level == 1 and tag != "custom" and netprobe.hard_skip(c, nt):  # فقط وقتی UDP با چند مقصد مستقل «قطعاً بسته» ثابت شده
+                    skip["udp_dead"] = skip.get("udp_dead", 0) + 1
+                    continue
+                if nt and netprobe.want_frag(c, nt):
+                    c["frag"] = True
                 if ("private_addr" in c["flags"] or danger(c)
                         or not usable(c, P["only_encrypted"])
                         or (P["only_encrypted"] and c["flags"] & STRICT_BAD)):
                     continue
                 parsed.append(c)
-            parsed.sort(key=lambda c: ("no_tls" in c["flags"], learn_order(c)))  # امیدوارکننده‌ترها (طبق تجربه‌ی قبلی) اول تست می‌شن
+            parsed.sort(key=lambda c: ("no_tls" in c["flags"], netprobe.priority(c, nt) if nt else 0, learn_order(c)))  # امیدوارکننده‌ترها (طبق تجربه‌ی قبلی) اول تست می‌شن
             for c in parsed:
                 cands.append(c)
                 if ended[0]:
@@ -1861,6 +2184,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             threading.Thread(target=sites_guard, args=(GEN[0], profile, found), daemon=True).start()
             threading.Thread(target=standby_sites, args=(GEN[0],), daemon=True).start()
             threading.Thread(target=sites_watch, args=(GEN[0], profile, found), daemon=True).start()
+            threading.Thread(target=bench_loop, args=(GEN[0],), daemon=True).start()
 
         finished, why = 0, ""
         while not STOP.is_set():
@@ -1928,6 +2252,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         LEARN["runs"] += 1
         _learn_state["dirty"] = True
         learn_save(True)
+        if not clock[0]:
+            _commit_bad(pend)
         bad_save(True)
         prune_sources()
         for c in found:
