@@ -26,8 +26,10 @@ jobs:
         run: bash scripts/fetch_binaries.sh
 
       - name: signing key
+        env:
+          HAVE_KEY: ${{ secrets.KEYSTORE_B64 != '' && secrets.KEYSTORE_PASSWORD != '' }}
         run: |
-          if [ -n "${{ secrets.KEYSTORE_B64 }}" ]; then
+          if [ "$HAVE_KEY" = "true" ]; then
             echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
             echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
           else
@@ -39,17 +41,33 @@ jobs:
           echo "KEY_ALIAS=key" >> "$GITHUB_ENV"
 
       - name: build APK
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
 
       - name: check APK
+        env:
+          HAVE_KEY: ${{ secrets.KEYSTORE_B64 != '' && secrets.KEYSTORE_PASSWORD != '' }}
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
           ls -la "$APK"
           BT="$ANDROID_HOME/build-tools/34.0.0"
-          "$BT/apksigner" verify --verbose "$APK" | head -6
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | head -8
           "$BT/aapt" dump badging "$APK" | head -4
+          FP=$("$BT/apksigner" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
+          {
+            echo "### امضا و نسخه"
+            echo "- versionCode: ${{ github.run_number }}"
+            echo "- اثرانگشت امضا (SHA-256): \`$FP\`"
+            if [ "$HAVE_KEY" = "true" ]; then
+              echo "- کلید ثابت: این APK روی نسخه‌ی قبلی (با همین اثرانگشت) بدون حذف نصب می‌شه."
+            else
+              echo "- ⚠️ کلید ثابت تنظیم نشده؛ این بیلد با کلید موقت امضا شده و روی نسخه‌ی قبلی نصب نمی‌شه (باید حذف و دوباره نصب بشه). Secretهای KEYSTORE_B64 و KEYSTORE_PASSWORD رو بذار."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           unzip -l "$APK" | grep -E "lib/arm64-v8a/|assets/geo/|assets/web/" | awk "{print \$1, \$4}"
           unzip -l "$APK" | grep -E "lib/(armeabi|x86)" && { echo "extra ABI found"; exit 1; } || true
 
