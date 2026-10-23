@@ -48,6 +48,12 @@ ol{padding-right:18px;margin:4px 0}
 .sr{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);flex-wrap:wrap}.sr:first-child{border-top:0}
 .sr .t{direction:ltr;font-size:13px}.sr .q{color:var(--mut);font-size:12px;direction:ltr}.sr .s{margin-inline-start:auto;display:flex;gap:5px;flex-wrap:wrap;align-items:center}
 .warnbar{margin:12px 4px 0;padding:8px 12px;border-radius:12px;background:#d6ae5c1a;border:1px solid #d6ae5c55;color:var(--warn);font-size:12.5px;text-align:center}
+.toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,30px);max-width:92vw;background:#232a34;color:var(--tx);border:1px solid var(--ac);border-radius:12px;padding:10px 14px;font-size:13px;line-height:1.6;opacity:0;pointer-events:none;transition:.25s;z-index:50}.toast.on{opacity:1;transform:translate(-50%,0)}
+html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
+#ob{position:fixed;inset:0;background:var(--bg);z-index:60;overflow:auto;padding:18px 14px 30px}#ob[hidden]{display:none}.obc{max-width:420px;margin:0 auto}
+.obc h2{margin:6px 0 4px;font-size:1.25em}.obs{background:var(--card);border-radius:14px;padding:14px;margin:10px 0}
+.obz{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.obz button{flex:1 1 30%;background:var(--card);color:var(--tx);border:2px solid var(--line);border-radius:12px;padding:10px 4px;font:inherit;cursor:pointer}.obz button.s{border-color:var(--ac);background:#58b5a81f}
+.obc label{display:block;margin:10px 0}
 .note{margin:6px 4px 0;color:var(--mut);font-size:12.5px}.note:empty{display:none}#sub{display:none}
 @media(min-width:900px){
  .w{max-width:1120px;padding:22px 30px 40px}
@@ -82,6 +88,21 @@ ol{padding-right:18px;margin:4px 0}
  <div class="modes" id="modes"></div>
  <div class="m" id="mdesc"></div>
 </div>
+
+<div class="card" id="callcard">
+ <div class="row"><span>حالت تماس (واتساپ و تلگرام) <button class="i" data-t="h-call">ⓘ</button></span><label class="sw"><input type="checkbox" id="callon"><span></span></label></div>
+ <p class="hint" id="h-call" hidden>فقط برای تماس صوتی/تصویری: سرور رو بر اساس کیفیت واقعیِ UDP از داخل تونل (تأخیر، نوسان، افت بسته) می‌سنجه، وسط کار سرور رو عوض نمی‌کنه مگر قطعِ کامل، کارهای پس‌زمینه (تست سایت‌ها، اسکن، دانلود منبع) رو متوقف می‌کنه تا اینترنتِ تماس رو اذیت نکنه، و کانفیگ رو بدون balancer و mux می‌سازه. عدد MOS یک برآورد تقریبیه، نه ضمانت.</p>
+ <div id="callbox" style="display:none">
+  <div class="chips" id="callq"></div>
+  <div class="m" id="calltips" style="margin-top:6px"></div>
+  <div style="margin-top:8px"><button class="btn" id="calltest">تست آمادگی تماس</button><button class="btn" id="callbest">بهترین سرور برای تماس</button></div>
+  <div class="m" id="callsocks" style="margin-top:8px"></div>
+  <div style="margin-top:4px"><a class="btn" id="calltg" href="#" style="display:inline-block;text-decoration:none">افزودن به تلگرام (SOCKS5)</a></div>
+  <p class="hint" style="margin-top:8px">تلگرام: بعد از افزودن، توی Settings ← Data and Storage ← Proxy گزینه‌ی «Use proxy for calls» رو روشن کن. پراکسی MTProto تماس رو پشتیبانی نمی‌کنه؛ فقط SOCKS5.</p>
+  <p class="hint" id="callwa"></p>
+ </div>
+</div>
+
 
 </div><div class="c2">
 <details id="setd"><summary>تنظیمات</summary>
@@ -122,33 +143,90 @@ ol{padding-right:18px;margin:4px 0}
 <button class="btn" id="impb">افزودن</button><span class="m" id="impm"></span>
   <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><p class="m" style="margin-top:0"><b>منبع‌های خودکار (از گیت‌هاب):</b> <span id="discmsg"></span></p>
   <button class="btn" id="discb" style="margin:0 0 8px">جستجوی منبع تازه همین الان</button><div id="autol"></div></div>
+ <div class="pane" data-p="diag"><p class="m" style="margin-top:0"><b style="color:var(--fg)">وضعیت شبکه و تشخیص</b><br>آنچه برنامه از شبکه‌ی فعلی اندازه گرفته و اینکه چرا وصل شده یا نشده. هیچ آدرس سرور یا رمزی توش نیست.</p>
+<div class="m" id="dnetid"></div>
+<div class="chips" id="dnet"></div>
+<div class="chips" id="dlink" style="margin-top:6px"></div>
+<div class="m" id="ddiag" style="margin-top:6px"></div>
+<div class="m" id="dwhy" style="margin-top:6px"></div>
+<pre id="dlog" style="direction:ltr;text-align:left;white-space:pre-wrap;max-height:200px;overflow:auto;font-size:11.5px;background:#12151a;border:1px solid var(--line);border-radius:8px;padding:8px;margin:8px 0"></pre>
+<button class="btn" id="dcopy" style="margin-right:0">کپی گزارش تشخیص</button>
+<div class="row" style="margin-top:12px"><span>سنجش شبکه <button class="i" data-t="h-np">ⓘ</button></span><label class="sw"><input type="checkbox" id="npon" checked><span></span></label></div>
+<p class="hint" id="h-np" hidden>برای فهمیدن اینکه کدوم پورت، UDP یا فیلتر روی شبکه‌ی تو بازه، برنامه چند اتصال کوچک (TCP، TLS، UDP) به IPهای ثابتِ کلودفلر، گوگل و Quad9 می‌زنه و برای تشخیص اپراتور (ASN) یک پرسش DNS به OpenDNS و Team Cymru می‌فرسته. چیزی از کانفیگ‌ها یا رمزهات نمی‌ره، ولی اون سرویس‌ها IP عمومی تو رو می‌بینن. خاموش‌کردنش فقط سنجش رو حذف می‌کنه و برنامه مثل قبل کار می‌کنه (فقط ترتیب تست‌ها هوشمندانه نمی‌شه).</p></div>
+<div class="pane" data-p="evo"><p class="m" style="margin-top:0"><b style="color:var(--fg)">تکامل برنامه</b><br>برنامه می‌تونه خودش رو بهتر کنه، ولی فقط توی یه محدوده‌ی امن: هر تغییر اول روی یه کپی جدا با همه‌ی تست‌ها امتحان می‌شه، فقط اگه سالم بود نصب می‌شه، و همیشه می‌تونی برگردی.</p>
+ <p class="m"><b>۱) گزارش:</b> این دکمه یه فایل آمار کلی می‌سازه (بدون آدرس سرور و رمز). فایل رو توی چت Claude بفرست.</p>
+ <a class="btn" id="evrep" download style="text-decoration:none;display:inline-block;margin-right:0">گزارش کامل (فشرده)</a><a class="btn" id="evrept" download style="text-decoration:none;display:inline-block">گزارش کامل (متنی)</a><p class="hint">اگه چت Claude نتونست فایل فشرده رو بخونه، «متنی» رو بفرست؛ همون اطلاعاته ولی حجمش بیشتره.</p>
+ <p class="m"><b>۲) وصله:</b> فایلی که Claude بهت می‌ده (پسوند ctpatch) رو اینجا انتخاب کن.</p>
+ <input type="file" id="evfile" accept=".ctpatch,.zip" style="font-size:12.5px;color:var(--mut)">
+ <div class="hint" id="evsum" hidden></div>
+ <button class="btn" id="evapply" style="display:none;margin-right:0">نصب امن (با تست)</button>
+ <div class="m" id="evjob"></div>
+  <div class="row"><span>اجازه‌ی نصب وصله (پیشرفته) <button class="i" data-t="h-evok">ⓘ</button></span><label class="sw"><input type="checkbox" id="evok"><span></span></label></div>
+  <p class="hint" id="h-evok" hidden>نصب وصله یعنی کد تازه روی دستگاهت اجرا می‌شه. این کلید پیش‌فرض خاموشه. فقط وصله‌ای نصب کن که خودت از Claude خودت گرفتی، و فایل گزارش رو فقط توی چت خودت بفرست؛ هر کسی که گزارشت رو داشته باشه می‌تونه وصله‌ی معتبر برات بسازه.</p>
+
+ <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
+ <div class="m" id="evuse" style="margin-top:0"></div>
+ <div style="height:6px;background:var(--line);border-radius:6px;overflow:hidden;margin:6px 2px"><i id="evbar" style="display:block;height:100%;width:0;background:var(--ok,#4ac08a)"></i></div>
+ <div class="row"><span>سقف حجم پوشه‌ی تکامل</span><select id="evcap" style="background:#12151a;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 8px;font:inherit;font-size:13px"><option value="10">۱۰ مگابایت</option><option value="20">۲۰ مگابایت</option><option value="50">۵۰ مگابایت</option><option value="100">۱۰۰ مگابایت</option></select></div>
+ <div class="row"><span>تنظیم خودکار تعداد تست هم‌زمان</span><label class="sw"><input type="checkbox" id="evauto"><span></span></label></div>
+ <p class="hint" id="evtune"></p>
+ <div class="m" id="evlist"></div>
+ <button class="btn" id="evback" style="margin-right:0">برگشت به نسخه‌ی قبل</button><button class="btn x" id="evorig">برگشت کامل به حالت اولیه</button>
+</div>
  <div class="pane" data-p="help"><ol class="m" style="margin-top:0"><li><b>متعادل:</b> بهترین ترکیب تأخیر و ثبات.</li><li><b>سرعت:</b> سرعت دانلود واقعی هر سرور (از داخل تونل) اندازه‌گیری می‌شه و سریع‌ترین انتخاب می‌شه.</li><li><b>پایداری:</b> فقط سروری که ۵ تست پشت‌سرهم بدون حتی یک خطا داشته؛ کم‌نوسان‌ترین اول.</li><li><b>امنیت بیشتر:</b> فقط Reality/TLS، بدون هیچ هشدار تنظیماتی، Reality اول؛ کمی گزینه‌ی کمتر.</li><li>ترفندهای کمکی (fragment، mux) فقط وقتی کانفیگ ساده وصل نشد خودکار امتحان می‌شن.</li><li>صاحب سرور رایگان مقصدها رو می‌بینه؛ وارد بانک و ایمیل اصلی نشو.</li><li id="h-bg">وقتی پنجره رو می‌بندی، می‌پرسه اتصال در پس‌زمینه ادامه داشته باشه یا همه‌چیز کامل بسته بشه.</li></ol></div>
  <div class="pane" data-p="more"><p class="m" style="margin-top:0">«پاک کردن» نتایج و کانفیگ‌های ذخیره‌شده/دستی رو حذف می‌کنه. «حذف کامل» کل برنامه و دیتاش رو پاک می‌کنه.</p>
-  <p class="m" id="ports"></p><button class="btn" id="batt" style="display:none">اجازه‌ی کار بدون محدودیت باتری</button><button class="btn" id="hide">بستن پنجره و ادامه در پس‌زمینه</button><button class="btn" id="quit">خروج کامل</button><button class="btn" id="clean">پاک کردن داده‌ها</button><button class="btn x" id="unin">حذف کامل برنامه</button></div>
+  <p class="m" id="ports"></p><button class="btn" id="batt" style="display:none">اجازه‌ی کار بدون محدودیت باتری</button><button class="btn" id="hide">بستن پنجره و ادامه در پس‌زمینه</button><button class="btn" id="quit">خروج کامل</button><button class="btn" id="look">تنظیم ظاهر (اندازه‌ی نوشته و کنتراست)</button><button class="btn" id="clean">پاک کردن داده‌ها</button><button class="btn x" id="unin">حذف کامل برنامه</button></div>
 </div>
 </div></div></div>
+<div id="ob" hidden><div class="obc"><h2>اول، ظاهر برنامه رو برای چشم خودت تنظیم کن</h2>
+<p class="m">هر اندازه‌ای که نوشته‌ی پایین رو راحت می‌خونی انتخاب کن. بعداً از «بیشتر ← تنظیم ظاهر» عوضش می‌کنی.</p>
+<div class="obs" id="obp">این یک نمونه متن است؛ ۱۲۳ — اتصال، یوتیوب، تلگرام. اگر این را بدون زور زدن می‌خوانی، اندازه مناسب است.</div>
+<div class="obz" id="obz"></div>
+<label><input type="checkbox" id="obhc"> نوشته‌ها پررنگ‌تر و کنتراست بالا (برای دید ضعیف‌تر)</label>
+<div id="obsn" class="obs" hidden><b>سنسورهای گوشی</b><p class="m" id="obinfo"></p><div id="obnt" hidden><p class="m">این گوشی دما رو نمی‌ده و من چیزی حدس نمی‌زنم. وقتی دمای گوشی معلوم نیست:</p>
+<label><input type="radio" name="obnt" value="gentle" checked> با نصف سرعت اسکن کار کن (ایمن‌تر برای گوشی)</label>
+<label><input type="radio" name="obnt" value="full"> بدون این محدودیت کار کن (خودم حواسم به داغ‌شدن هست)</label></div></div>
+<button class="btn" id="obok">تأیید و ادامه</button></div></div>
 <script>
 const T="__T__";
 const M={balanced:["متعادل","تأخیر + ثبات"],speed:["سرعت","سریع‌ترین دانلود"],stable:["پایداری","بدون حتی یک خطا"],secure:["امنیت","فقط رمزنگاری سخت‌گیرانه"]};
 const MD={balanced:"بهترین ترکیب تأخیر و ثبات؛ مناسب بیشتر کارها.",speed:"سرعت دانلود هر سرور از داخل تونل اندازه‌گرفته می‌شه و سریع‌ترین انتخاب می‌شه.",stable:"فقط سروری که ۵ تست پشت‌سرهم بی‌خطا داشته؛ کم‌نوسان‌ترین اول.",secure:"فقط Reality/TLS بدون هشدار تنظیماتی؛ گزینه‌ها کمترن ولی امن‌ترن."};
-const TB=[["srv","سرورها"],["an","روش‌ها"],["add","افزودن دستی"],["help","راهنما"],["more","بیشتر"]];
+const TB=[["srv","سرورها"],["an","روش‌ها"],["add","افزودن دستی"],["diag","تشخیص"],["evo","تکامل"],["help","راهنما"],["more","بیشتر"]];
 let prof="balanced",tab="srv",S={},last={},cancelling=0,loaded=false;
 const $=i=>document.getElementById(i);
 const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-T":T,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 const once=(k,v,fn)=>{const j=JSON.stringify(v);if(last[k]!==j){last[k]=j;fn()}};
+const dredact=t=>String(t).replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g,"x.x.x.x").replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,"<id>").replace(/\b([a-z0-9-]+\.)+[a-z]{2,}\b/gi,"<host>").replace(/[0-9a-f:]{16,}/gi,"<hex>");
+const YN={yes:"باز",no:"بسته",unknown:"نامعلوم"},YS={yes:"دارد",no:"ندارد",unknown:"نامعلوم"},YF={yes:"کمک می‌کنه",no:"کمک نمی‌کنه",unknown:"نامعلوم"},LK={good:"سالم",jittery:"نوسان",lossy:"افت بسته",cut:"قطع"};
+function dtext(s){const n=s.net,d=s.diag||{},L=[];L.push("گزارش تشخیص ConfigTool");
+ if(n){L.push("شبکه: "+(n.id||"نامعلوم")+(n.ok?"":" (اینترنت/سنجش ناموفق)"));L.push("پورت‌ها: "+Object.keys(n.ports||{}).map(p=>p+"="+(YN[n.ports[p]]||n.ports[p])).join(" "));L.push("UDP="+(YN[n.udp]||n.udp)+" QUIC="+(YN[n.quic]||n.quic)+" فیلتر SNI="+(YS[n.sni]||n.sni)+" fragment="+(YF[n.frag]||n.frag)+(n.clock?" | "+n.clock:""))}else L.push("سنجش شبکه: انجام نشده");
+ L.push("لینک فعلی: "+(LK[s.link]||s.link||"—")+" | تعداد سرورهای فهرست: "+(Array.isArray(s.servers)?s.servers.length:"؟")+" | کنارگذاشته (بازبینی): "+(s.bench||0));
+ L.push("تست‌شده "+(d.tested||0)+": کارکرده "+(d.ok||0)+"، جواب نداده "+(d.no_reach||0)+"، بدون ترافیک "+(d.no_traffic||0)+"، ناامن "+(d.unsafe||0)+" | از قرنطینه/حذف: "+JSON.stringify(d.skip||{}));
+ L.push("حالت: "+(s.profile||"")+" / "+(s.mode||"")+" | تماس: "+((s.call||{}).on?"روشن":"خاموش"));
+ L.push("--- لاگ ---");(s.log||[]).slice(-40).forEach(x=>L.push(x));return dredact(L.join("\n"))}
+function dcopy(t){const ok=()=>toast("گزارش کپی شد (آدرس‌ها حذف شدن)");try{navigator.clipboard.writeText(t).then(ok,()=>{throw 0})}catch(e){const a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();try{document.execCommand("copy");ok()}catch(_){toast("کپی نشد؛ متن پایین صفحه رو دستی انتخاب کن")}a.remove()}}
 const el=(t,txt,cls)=>{const e=document.createElement(t);if(txt!=null)e.textContent=txt;if(cls)e.className=cls;return e};
 function modes(){const c=$("modes");c.textContent="";for(const k in M){const b=el("button",null,"mode"+(k==prof?" s":""));b.append(M[k][0]);const s=el("small",M[k][1]);b.appendChild(s);b.onclick=()=>{prof=k;modes();save()};c.appendChild(b)}$("mdesc").textContent=MD[prof]}
 function tabs(){const t=$("tabs");t.textContent="";TB.forEach(([k,l])=>{const b=el("button",l,"tab"+(k==tab?" s":""));b.onclick=()=>{tab=k;tabs()};t.appendChild(b)});document.querySelectorAll(".pane").forEach(p=>p.className="pane"+(p.dataset.p==tab?" s":""))}
 document.querySelectorAll(".i").forEach(b=>b.onclick=()=>{const h=$(b.dataset.t);h.hidden=!h.hidden});
-const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked});
-const save=()=>api("/api/settings",cur());
+const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked,netprobe:$("npon").checked,evolve_ok:$("evok").checked});
+function toast(m){let t=$("toast");if(!t){t=el("div",null,"toast");t.id="toast";t.setAttribute("role","status");document.body.appendChild(t)}t.textContent=m;t.className="toast on";clearTimeout(toast.h);toast.h=setTimeout(()=>t.className="toast",6000)}
+const FSZ=[["کوچک",0.9],["معمولی",1],["بزرگ",1.15],["خیلی بزرگ",1.3],["درشت",1.5]];let obfs=1;
+function applyLook(x){x=x||{};const f=typeof x.fs=="number"?x.fs:1;obfs=f;document.body.style.zoom=f==1?"":f;document.documentElement.classList.toggle("hc",!!x.hc)}
+function obDraw(){const z=$("obz");z.textContent="";FSZ.forEach(([l,v])=>{const b=el("button",l,v==obfs?"s":"");b.onclick=()=>{obfs=v;document.body.style.zoom=v==1?"":v;obDraw()};z.appendChild(b)})}
+function obSensors(s){const on=!$("ob").hidden&&s&&s.android;$("obsn").hidden=!on||!s.res_info;if(!on)return;$("obinfo").textContent=s.res_info||"";const bl=!!(s.sensors&&s.sensors.blind);$("obnt").hidden=!bl}
+function showOb(s){$("ob").hidden=false;$("obhc").checked=document.documentElement.classList.contains("hc");obDraw();obSensors(s||S)}
+$("obhc").onchange=()=>document.documentElement.classList.toggle("hc",$("obhc").checked);
+$("obok").onclick=()=>{const b={fs:obfs,hc:$("obhc").checked,onboarded:true};if(!$("obnt").hidden)b.notemp=document.querySelector("input[name=obnt]:checked").value;api("/api/settings",b).then(()=>{$("ob").hidden=true}).catch(()=>{$("ob").hidden=true})};
+const save=()=>api("/api/settings",cur()).then(r=>{if(r&&r.applied&&r.applied.length)toast(r.applied.join("  •  "));return r}).catch(()=>{});
 function applySettings(x){if(!x)return;if(x.profile&&M[x.profile])prof=x.profile;
  if(x.mode)document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==x.mode);
  if(x.speed)document.querySelectorAll("input[name=sp]").forEach(r=>r.checked=r.value==x.speed);
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
- if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;$("autosrc").checked=x.autosrc!==false;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
+ if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;$("autosrc").checked=x.autosrc!==false;$("npon").checked=x.netprobe!==false;$("evok").checked=x.evolve_ok===true;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
 function render(s){S=s;const st=s.stage,c=s.connected;
- if(!loaded){loaded=true;applySettings(s.settings)}
+ if(!loaded){loaded=true;applySettings(s.settings);applyLook(s.settings);if(!(s.settings&&s.settings.onboarded))showOb(s)}
+ if(!$("ob").hidden)obSensors(s);
  $("dot").className="dot "+(st=="connected"?"on":st=="error"?"err":st=="running"?"run":"");
  const g=$("go");g.className=st=="connected"?"on":st=="running"?"run":"";if(st!="running")cancelling=0;g.disabled=cancelling>0;
  g.textContent=cancelling?"در حال لغو…":st=="connected"?"قطع":st=="running"?"لغو":"اتصال";
@@ -163,12 +241,24 @@ function render(s){S=s;const st=s.stage,c=s.connected;
  if(s.android&&!window._ad){window._ad=1;
   $("syslbl").textContent="VPN سراسری (کل گوشی)";
   $("h-sys").textContent="با روشن بودن این گزینه، ترافیک همه‌ی برنامه‌های گوشی از اتصال می‌گذره (نه فقط مرورگر). بار اول اندروید یک‌بار اجازه‌ی VPN می‌خواد. با «قطع» یا «خروج کامل» همه‌چیز به حالت عادی برمی‌گرده. اگه خاموش باشه فقط پروکسی محلی بالا میاد.";
-  $("unin").style.display="none";
+  $("unin").style.display=window.AndroidBridge&&AndroidBridge.uninstall?"block":"none";
   $("hide").textContent="رفتن به صفحه‌ی اصلی گوشی (اتصال ادامه داره)";
   const hb=$("h-bg");if(hb)hb.textContent="وقتی از برنامه بیرون میری، اتصال در پس‌زمینه ادامه داره؛ اعلان برنامه رو نبند. برای قطع کامل «خروج کامل» رو بزن.";
   if(window.AndroidBridge)$("batt").style.display="block"}
  if(s.cdp&&!window._bu){window._bu=1;window.addEventListener("beforeunload",e=>{e.preventDefault();e.returnValue=""})}
  once("ch",[s.sources],()=>{const b=$("chl");b.textContent="";(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const d=el("div",null,"kv");const n=el("span",x.url.replace("https://t.me/s/","@").replace("https://",""));n.style.direction="ltr";const r=el("button","حذف","btn x");r.onclick=()=>api("/api/delsource",{url:x.url}).then(tick);d.append(n,el("span",x.got?x.got+" کانفیگ (آخرین بار)":""),r);b.appendChild(d)});});
+ once("diag",[s.net,s.diag,s.link,s.bench,s.log],()=>{const n=s.net,d=s.diag||{},b=$("dnet"),k=$("dlink");b.textContent="";k.textContent="";
+  $("dnetid").textContent=n?("شبکه‌ی تشخیص‌داده‌شده: "+(n.id||"نامعلوم")+(n.ok?"":" — اینترنت یا سنجش ناموفق بود، پس نتیجه‌ای صادر نشد")):"سنجش شبکه هنوز انجام نشده (یا خاموشه).";
+  if(n&&n.ok){for(const p in (n.ports||{}))b.appendChild(el("span","پورت "+p+": "+(YN[n.ports[p]]||n.ports[p]),"chip "+(n.ports[p]=="yes"?"ok":n.ports[p]=="no"?"no":"")));
+   [["UDP",n.udp,YN],["QUIC",n.quic,YN],["فیلتر SNI",n.sni,YS],["fragment",n.frag,YF]].forEach(([t,v,m])=>b.appendChild(el("span",t+": "+(m[v]||v),"chip "+((t=="فیلتر SNI"?v=="no":v=="yes")?"ok":v=="unknown"?"":"no"))));if(n.clock)b.appendChild(el("span",n.clock,"chip no"))}
+  k.appendChild(el("span","لینک فعلی: "+(LK[s.link]||"—"),"chip "+(s.link=="good"?"ok":s.link?"no":"")));k.appendChild(el("span","کنارگذاشته (در حال بازبینی): "+(s.bench||0),"chip"));
+  $("ddiag").textContent="تست‌شده "+(d.tested||0)+": کارکرده "+(d.ok||0)+"، جواب نداده "+(d.no_reach||0)+"، جواب داده ولی ترافیک رد نشد "+(d.no_traffic||0)+"، ناامن "+(d.unsafe||0)+(d.skip&&d.skip.quarantine?"، از قرنطینه رد شد "+d.skip.quarantine:"");
+  let w="";if(d.tested>=8&&!d.ok){w=d.no_reach>=0.8*d.tested?"بیشترِ سرورها اصلاً جواب ندادن: معمولاً یعنی پورت/IP فیلتره یا اینترنت قطعه.":d.no_traffic>=0.5*d.tested?"سرورها جواب دادن ولی ترافیک واقعی رد نشد: معمولاً فیلتر عمیق (DPI) یا محدودیت.":"هیچ سرور سالمی پیدا نشد؛ منبع‌ها یا شبکه رو بررسی کن."}$("dwhy").textContent=w;
+  $("dlog").textContent=(s.log||[]).join("\n")});
+ once("call",[s.call,s.stage],()=>{const c=s.call||{},q=c.q,b=$("callq");b.textContent="";$("callon").checked=!!c.on;$("callbox").style.display=c.on?"block":"none";if(!c.on)return;
+  if(!q)b.appendChild(el("span","در حال اندازه‌گیری …","chip"));else{b.appendChild(el("span","کیفیت تماس: "+q.grade_fa,"chip "+(q.grade=="excellent"||q.grade=="good"?"ok":q.grade=="fair"?"":"no")));if(q.udp_ok){b.appendChild(el("span","تأخیر "+Math.round(q.p50)+" ms","chip"));b.appendChild(el("span","نوسان "+Math.round(q.jitter||0)+" ms","chip"));b.appendChild(el("span","افت "+q.loss+"٪","chip"));b.appendChild(el("span","MOS ≈ "+q.mos,"chip"))}}
+  $("calltips").textContent=(c.tips||[]).join(" ");$("calltg").href=c.tg||"#";$("callsocks").textContent="SOCKS5: 127.0.0.1:"+String(c.tg||"").split("port=")[1];
+  $("callwa").textContent=c.android?"واتساپ: چون اتصال کل گوشی (VPN) فعاله، UDP تماس واتساپ باید از همین تونل بره.":"واتساپ دسکتاپ برای تماس از پراکسی ویندوز استفاده نمی‌کنه؛ تماس واتساپ روی ویندوز با این برنامه تضمین نمی‌شه (فقط اتصال کل سیستم مثل VPN، UDP واتساپ رو می‌بره)."});
  once("sites",[s.sites,s.stage],()=>{const b=$("sitesln");b.textContent="";if(s.stage!="connected"||!s.sites)return;const nm={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};Object.keys(nm).forEach(k=>b.appendChild(el("span",(s.sites[k]?"✓ ":"✗ ")+nm[k],"chip "+(s.sites[k]?"ok":"no"))))});
  once("upd",[s.fetch,s.sources],()=>{const b=$("updln");b.textContent="";const f=s.fetch||{};if(!f.t){b.textContent="منابع: هنوز دریافت نشده";return}if(!f.n){b.textContent="منابع: دریافت ناموفق بود (۰ کانفیگ)؛ از لیست ذخیره‌شده‌ی قبلی استفاده می‌شه.";b.style.color="var(--bad,#ff8a80)";return}b.style.color="";const tm=new Date(f.t*1000).toLocaleTimeString("fa-IR",{hour:"2-digit",minute:"2-digit"});b.appendChild(el("span","منابع به‌روز شد ("+tm+"): "+f.n+" کانفیگ از "+f.ok+" منبع"));const cw=el("div",null,"chips");(s.sources||[]).filter(x=>x.kind=="channel").forEach(x=>{const e=el("span",(x.got?"✓ ":"✗ ")+x.url.replace("https://t.me/s/","@").replace("https://","")+(x.got?" ("+x.got+")":""),"chip sm "+(x.got?"ok":"no"));e.style.direction="ltr";cw.appendChild(e)});if(cw.childNodes.length)b.appendChild(cw)});
  once("srv",[s.servers,s.switches],()=>{const sv=$("servers");sv.textContent="";const T={yt:"یوتیوب",ig:"اینستاگرام",tg:"تلگرام"};
@@ -200,20 +290,53 @@ $("go").onclick=()=>{const st=S.stage;
  if(st=="connected"||st=="running"){if(st=="running"){cancelling=1;$("go").disabled=true;$("go").textContent="در حال لغو…";setTimeout(()=>{cancelling=0},15000)}return api("/api/stop",{})}
  if(window.AndroidBridge&&$("sysp").checked)AndroidBridge.ensureVpn();$("st").textContent="در حال شروع …";
  api("/api/start",{profile:prof,speed:document.querySelector("input[name=sp]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",sysproxy:$("sysp").checked,mode:document.querySelector("input[name=mode]:checked").value,direct:$("dir").value,tgonly:$("tgonly").checked})};
-document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#tgonly,#autosrc").forEach(e=>e.addEventListener("change",save));
+document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#tgonly,#autosrc,#npon,#evok").forEach(e=>e.addEventListener("change",save));
 window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/closing?t="+T,"")}catch(e){}});
 $("discb").onclick=()=>api("/api/discover",{}).then(tick);
 $("learnreset").onclick=()=>{if(confirm("یادگیری پاک بشه؟"))api("/api/learn_reset",{}).then(tick)};
 $("tgbtn").onclick=()=>{$("tgonly").checked=true;api("/api/settings",cur()).then(()=>$("go").click())};
+$("dcopy").onclick=()=>dcopy(dtext(S));
+$("callon").onchange=()=>api("/api/call",{on:$("callon").checked}).then(tick);
+$("calltest").onclick=()=>{const b=$("calltest");b.disabled=true;b.textContent="در حال تست …";api("/api/call/test",{}).then(()=>{b.disabled=false;b.textContent="تست آمادگی تماس";tick()}).catch(()=>{b.disabled=false;b.textContent="تست آمادگی تماس"})};
+$("callbest").onclick=()=>api("/api/call/best",{}).then(tick);
 $("sitesln").onclick=()=>{if(S.stage=="connected"){$("sitesln").textContent="در حال تست یوتیوب و اینستاگرام و تلگرام …";api("/api/sitecheck",{}).then(tick)}};
 $("chb").onclick=()=>{$("chm").textContent="در حال خوندن پیام‌ها … (تا ۴۵ ثانیه)";$("chb").disabled=true;api("/api/addsource",{text:$("chn").value}).then(r=>{$("chm").textContent=r.ok?r.found+" کانفیگ پیدا شد؛ کانال به منبع‌ها اضافه شد.":(r.error||"ناموفق");if(r.ok)$("chn").value="";$("chb").disabled=false;tick()}).catch(()=>{$("chm").textContent="ارتباط با برنامه قطع شد.";$("chb").disabled=false})};
 $("impb").onclick=()=>{$("impm").textContent="در حال بررسی … (اگه لینک ساب باشه تا ۳۰ ثانیه)";$("impb").disabled=true;api("/api/import",{text:$("imp").value}).then(r=>{$("impm").textContent=r.added?r.added+" کانفیگ اضافه شد.":r.error=="big"?"متن خیلی بزرگه (حداکثر حدود ۸ مگابایت). تکه‌تکه paste کن.":r.error=="http"?"فقط لینک https پشتیبانی می‌شه.":r.urls?"لینک دریافت نشد یا کانفیگی توش نبود.":"کانفیگ معتبری پیدا نشد.";if(r.added)$("imp").value="";$("impb").disabled=false}).catch(()=>{$("impm").textContent="ارتباط با برنامه قطع شد.";$("impb").disabled=false})};
 $("clean").onclick=()=>{if(confirm("نتایج، کانفیگ‌های ذخیره‌شده و دستی پاک بشن؟"))api("/api/clean",{})};
+$("look").onclick=()=>showOb(S);
 $("batt").onclick=()=>{if(window.AndroidBridge)AndroidBridge.batterySettings()};
 $("hide").onclick=()=>window.goHide?(goHide(),0):window.AndroidBridge?AndroidBridge.moveToBack():api("/api/hide",{}).then(()=>{document.body.textContent="برنامه در پس‌زمینه ادامه می‌ده. برای باز کردن دوباره‌ی پنجره، ConfigTool رو اجرا کن."});
-$("quit").onclick=()=>api("/api/quit",{}).then(()=>{document.body.textContent="بسته شد. می‌تونی این پنجره رو ببندی."});
-$("unin").onclick=()=>{if(confirm("کل برنامه و دیتاش حذف بشه؟"))api("/api/uninstall",{}).then(()=>{document.body.textContent="حذف شد. می‌تونی این پنجره رو ببندی."})};
+$("quit").onclick=()=>window.AndroidBridge&&AndroidBridge.quitAll?(AndroidBridge.quitAll(),document.body.textContent="در حال بستن کامل ..."):api("/api/quit",{}).then(()=>{document.body.textContent="بسته شد. می‌تونی این پنجره رو ببندی."});
+$("unin").onclick=()=>{if(window.AndroidBridge&&AndroidBridge.uninstall){if(confirm("همه‌ی داده‌ی برنامه پاک می‌شه و بعد صفحه‌ی حذف اندروید باز می‌شه (تأیید نهایی با خودته). ادامه؟")){AndroidBridge.uninstall();document.body.textContent="در حال پاک‌کردن ..."}return}if(confirm("کل برنامه و دیتاش حذف بشه؟"))api("/api/uninstall",{}).then(()=>{document.body.textContent="حذف شد. می‌تونی این پنجره رو ببندی."})};
 $("setd").open=innerWidth>=900;modes();tabs();$("dl").href="/report?dl=1&t="+T;$("vw").href="/report?t="+T;
+const evb64=b=>{let s="",u=new Uint8Array(b);for(let i=0;i<u.length;i+=32768)s+=String.fromCharCode.apply(null,u.subarray(i,i+32768));return btoa(s)};
+let evData=null;
+const evkb=k=>k>=1000?(k/1000).toFixed(1)+" مگابایت":k+" کیلوبایت";
+function evSum(r){const b=$("evsum");b.hidden=false;b.textContent="";$("evapply").style.display="none";
+ if(!r.ok){b.append("نمی‌شه نصبش کرد: "+(r.errors||[]).join(" / "));return}
+ const s=r.summary;b.append(el("b","«"+s.title+"»"));b.append(el("div",s.notes));
+ s.files.forEach(f=>b.append(el("div","• "+f.path+" ("+(f.action=="add"?"فایل تازه":"جایگزینی")+"، "+f.new_lines+" خط)")));
+ $("evapply").style.display="inline-block"}
+$("evrep").href="/api/evolve/report?t="+T;$("evrept").href="/api/evolve/report?plain=1&t="+T;
+$("evfile").onchange=async e=>{const f=e.target.files[0];evData=null;$("evsum").hidden=true;$("evapply").style.display="none";$("evjob").textContent="";if(!f)return;
+ if(f.size>3e6){$("evsum").hidden=false;$("evsum").textContent="فایل خیلی بزرگه.";return}
+ evData=evb64(await f.arrayBuffer());evSum(await api("/api/evolve/inspect",{b64:evData}))};
+$("evapply").onclick=()=>{if(!evData||!confirm("وصله روی کپی جدا تست و بعد نصب بشه؟"))return;$("evapply").style.display="none";
+ api("/api/evolve/apply",{b64:evData}).then(r=>{$("evjob").textContent=r.ok?"شروع شد ...":(r.errors||["الان نمی‌شه"]).join(" ");evRefresh()})};
+$("evcap").onchange=()=>api("/api/evolve/cap",{mb:+$("evcap").value}).then(evRefresh);
+$("evauto").onchange=()=>api("/api/evolve/autotune",{on:$("evauto").checked}).then(evRefresh);
+$("evback").onclick=()=>{if(confirm("آخرین وصله برداشته بشه؟"))api("/api/evolve/rollback",{mode:"last"}).then(r=>{$("evjob").textContent=(r.msg||"")+(r.ok?" برنامه رو کامل ببند و دوباره باز کن.":"");evRefresh()})};
+$("evorig").onclick=()=>{if(confirm("همه‌ی وصله‌ها برداشته بشن و برنامه به حالت اولیه برگرده؟"))api("/api/evolve/rollback",{mode:"original"}).then(r=>{$("evjob").textContent=(r.msg||"")+(r.ok?" برنامه رو کامل ببند و دوباره باز کن.":"");evRefresh()})};
+function evRefresh(){api("/api/evolve").then(x=>{if(!x||!x.usage)return;const u=x.usage;
+ $("evuse").textContent="حجم تکامل: "+evkb(u.evolve_kb)+" از "+evkb(u.cap_kb)+" | حجم کد برنامه: "+evkb(u.code_kb)+" از "+evkb(u.code_max_kb)+" | کل داده‌ها: "+evkb(u.data_kb);
+ $("evbar").style.width=Math.min(100,100*u.evolve_kb/Math.max(1,u.cap_kb))+"%";
+ $("evcap").value=String(x.cap_mb);$("evauto").checked=!!x.autotune;
+ $("evtune").textContent=x.autotune?("ضریب فعلی: "+x.tune.m+(x.tune.why?" ("+x.tune.why+")":"")+". فقط تعداد تست هم‌زمان عوض می‌شه، نه سرعت ارسال."):"خاموشه؛ همون تعداد تست انتخاب سرعت اسکن استفاده می‌شه.";
+ const l=$("evlist");l.textContent="";const a=x.applied.filter(v=>v.active);
+ l.append(a.length?"وصله‌های نصب‌شده:":"هنوز وصله‌ای نصب نشده.");a.forEach(v=>l.append(el("div","• "+v.title+(v.ok?" ✓":" (در حال آزمایش اجرا)"))));
+ $("evback").style.display=a.length?"inline-block":"none";$("evorig").style.display=a.length?"inline-block":"none";
+ const j=x.job||{};if(j.state=="running")$("evjob").textContent=j.msg;else if(j.state=="done"||j.state=="failed")$("evjob").textContent=j.msg||""}).catch(()=>{})}
+setInterval(()=>{if(tab=="evo")evRefresh()},2000);
 const tick=()=>api("/api/state").then(render).catch(()=>{$("st").textContent="ارتباط با برنامه قطع شده؛ پنجره رو ببند و دوباره باز کن."});
 tick();setInterval(tick,1500);
 </script></body></html>
