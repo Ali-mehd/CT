@@ -836,7 +836,7 @@ def site_check(port, timeout=5):
     return {k: bool(res.get(k)) for k in ("yt", "ig", "tg")}
 
 
-def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False):
+def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=False):
     port, tmp = free_port(), tempfile.mkdtemp(prefix="cfgscan_")
     env = dict(os.environ) if ANDROID else {k: v for k, v in os.environ.items()
            if k.upper() in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "HOME")}
@@ -894,6 +894,9 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False):
                 pass
             if sites:  # آیا یوتیوب و اینستاگرام و تلگرام واقعاً باز می‌شن؟
                 c["sites"] = site_check(port, min(timeout, 5))
+            if call:  # حالت تماس: کیفیت واقعی UDP (تأخیر/نوسان/افت) از داخل همین تونل
+                import cfgcall
+                c["call"] = cfgcall.measure_via(port, 12)
             if speed:  # سرعت واقعی دانلود از داخل تونل (فقط روی نامزدهای نهایی)
                 k = measure_kbps(port, secs, 2, timeout)
                 if k:

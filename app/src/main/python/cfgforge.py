@@ -8,6 +8,7 @@ PROFILES = {
     "stable": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=False, desc="پایداری"),
     "secure": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=True, desc="امنیت بیشتر"),
 }
+CALL = [False]  # حالت تماس: فقط یک خروجی ثابت (بدون balancer)، بدون mux و sniffing، با مهلت بی‌کاری بلندتر
 COUNTRY_DIRECT = {"ir": ["domain:ir", "geosite:category-ir"], "az": ["domain:az"], "tr": ["domain:tr"],
                   "ru": ["domain:ru"], "cn": ["geosite:geolocation-cn"]}
 
@@ -27,15 +28,16 @@ def set_dialer(ob, tag):
 def make_client(cfgs, prof, chain, direct, sport, hport, probe_interval="30s", strategy=None, plain=False, block_ads=False,
                 direct_country=""):
     P = PROFILES[prof]
-    if chain:
-        cfgs = cfgs[:1]  # زنجیره فقط یک هاپ اول می‌گیره
+    call = CALL[0]
+    if chain or call:
+        cfgs = cfgs[:1]  # زنجیره فقط یک هاپ اول می‌گیره؛ در حالت تماس هم balancer (leastPing) وسط تماس خروجی رو عوض می‌کرد و تماس می‌پرید
     obs, use_frag = [], False
     for i, c in enumerate(cfgs, 1):
         ob = ob_of(c, f"proxy-{i}")
         if (P["fragment"] and not plain and c["security"] == "tls") or c.get("frag"):
             set_dialer(ob, "fragment")
             use_frag = True
-        if P["mux"] and not plain and c["network"] == "ws" and c["proto"] != "ss" and not c["flow"]:
+        if P["mux"] and not call and not plain and c["network"] == "ws" and c["proto"] != "ss" and not c["flow"]:
             ob["mux"] = {"enabled": True, "concurrency": 8}
         obs.append(ob)
     if chain:
@@ -47,7 +49,7 @@ def make_client(cfgs, prof, chain, direct, sport, hport, probe_interval="30s", s
         obs.append({"tag": "fragment", "protocol": "freedom",
                     "settings": {"fragment": {"packets": "tlshello", "length": "100-200", "interval": "10-20"}}})
 
-    sniff = {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True}
+    sniff = {"enabled": not call, "destOverride": ["http", "tls", "quic"], "routeOnly": True}
     rules = [{"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"},
              {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"}]
     if direct:
@@ -73,6 +75,8 @@ def make_client(cfgs, prof, chain, direct, sport, hport, probe_interval="30s", s
                {"tag": "http-in", "listen": "127.0.0.1", "port": hport, "protocol": "http", "sniffing": sniff}],
            "outbounds": obs,
            "routing": {"domainStrategy": "AsIs", "rules": rules}}
+    if call:  # سشن‌های UDP بی‌صدا (قطع میکروفون/hold) نباید زود بسته بشن
+        cfg["policy"] = {"levels": {"0": {"connIdle": 600, "handshake": 8}}}
     if multi:
         cfg["routing"]["balancers"] = [{"tag": "bal", "selector": ["proxy-"], "strategy": {"type": strategy or P["strategy"]}}]
         cfg["observatory"] = {"subjectSelector": ["proxy-"], "probeUrl": LAT_URL, "probeInterval": probe_interval, "enableConcurrency": True}
