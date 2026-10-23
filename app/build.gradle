@@ -12,8 +12,10 @@ android {
         minSdk 24
         // ۳۳ عمداً: از ۳۴ به بعد نوع foreground-service در مانیفست اجباریه و تست‌نشده‌ست.
         targetSdk 33
-        versionCode 1
-        versionName '1.0'
+        // به‌روزرسانی روی نسخه‌ی نصب‌شده فقط وقتی کار می‌کنه که: applicationId و کلید امضا ثابت باشن و versionCode بزرگ‌تر بشه.
+        // workflow شماره‌ی اجرا رو به‌عنوان versionCode می‌ده؛ بیلد محلی بدون متغیر ۱ می‌مونه.
+        versionCode((System.getenv('VERSION_CODE') ?: '1') as int)
+        versionName System.getenv('VERSION_NAME') ?: '1.0'
         ndk { abiFilters 'arm64-v8a' }
     }
 
