@@ -45,6 +45,9 @@ SETTINGS = DATA / "settings.json"
 STOP, XRAY_PROC, WIN, PORT, TOKEN, _lock, PIPE = threading.Event(), None, None, 0, "", None, None
 
 
+START_LOCK = threading.Lock()
+
+
 class Cancel(Exception):
     pass
 
@@ -121,6 +124,12 @@ def load_db():
                      if isinstance(s, dict) and isinstance(s.get("url"), str)]
     if "removed" in db:
         db["removed"] = [u for u in (db["removed"] if isinstance(db["removed"], list) else []) if isinstance(u, str)]
+    for s in db["sources"]:  # ردیف ناقص/با نوع اشتباه: مقدار پیش‌فرض می‌گیره، بقیه‌ی منابع سالم می‌مونن
+        if not isinstance(s.get("on"), bool):
+            s["on"] = True
+        for k in ("got", "alive"):
+            if isinstance(s.get(k), bool) or not isinstance(s.get(k), (int, float)):
+                s[k] = 0
     have, removed, changed = {s["url"] for s in db["sources"]}, set(db.get("removed", [])), False
     for u in cfgscan.DEFAULT_SOURCES:  # منبع‌های جدیدِ نسخه‌های تازه خودکار اضافه می‌شن (مگر اینکه خودت حذفشون کرده باشی)
         if u not in have and u not in removed:
@@ -786,6 +795,24 @@ def bench_step():
     return due
 
 
+def resilient(fn):
+    """ناظرهای پس‌زمینه (نوسان‌گیری، چک سایت‌ها، سنجش حالت تماس) با یک خطای غیرمنتظره برای همیشه خاموش نشن؛
+    خطا ثبت می‌شه و حلقه بعد از چند ثانیه دوباره شروع می‌شه. با عوض‌شدن اتصال (gen) یا توقف، عادی تموم می‌شه."""
+    def wrap(gen, *a, **k):
+        while GEN[0] == gen and not STOP.is_set():
+            try:
+                return fn(gen, *a, **k)
+            except Exception as e:
+                say(f"ناظر {fn.__name__} خطا داد و دوباره شروع شد: {type(e).__name__}")
+                for _ in range(5):
+                    if GEN[0] != gen or STOP.is_set():
+                        return
+                    time.sleep(1)
+    wrap.__name__ = fn.__name__
+    return wrap
+
+
+@resilient
 def bench_loop(gen):
     """سرورِ کنارگذاشته‌شده رو زود و دوباره می‌سنجه (۲۰، ۶۰، ۱۸۰، ۴۲۰ ثانیه). برای برگشت، دو بازبینیِ سالمِ پشت‌سرهم (با فاصله) لازمه
     تا سروری که فقط یه لحظه سالم دیده شد برنگرده؛ برگشته‌ها با نشانه‌ی «ناپایدار» ۳۰ دقیقه آخر صف می‌شینن. چهار شکست = کنار گذاشته می‌شه."""
@@ -799,7 +826,7 @@ def bench_loop(gen):
                 continue
             bench_step()
     except Exception:
-        pass
+        raise
 
 
 def link_state(hist, fails):
@@ -1015,7 +1042,7 @@ def call_tips(q):
     if not q:
         return []
     if not q.get("udp_ok"):
-        return ["UDP از این سرور رد نمی‌شه. «بهترین سرور برای تماس» رو بزن؛ اگه هیچ سروری UDP نداشت، تماس صوتی پایدار ممکن نیست."]
+        return ["UDP از این سرور رد نمی‌شه؛ برنامه خودش دنبال سروری با UDP می‌گرده (می‌تونی «بهترین سرور برای تماس» رو هم بزنی). اگه روی هیچ سروری جواب نیومد، احتمالاً STUN روی این شبکه بسته‌ست و نمی‌شه قضاوت کرد."]
     t = []
     if (q.get("loss") or 0) >= 3:
         t.append("افت بسته بالاست: روی Wi-Fi به مودم نزدیک‌تر شو یا جای دیگه امتحان کن؛ همزمان دانلود/آپلود سنگین نداشته باش.")
@@ -1044,6 +1071,7 @@ def call_state():
     return dict(on=CALL[0], q=q, tips=call_tips(q), tg=f"tg://socks?server=127.0.0.1&port={SOCKS}", android=bool(ANDROID))
 
 
+@resilient
 def call_monitor(gen):
     """وقتی حالت تماس روشنه، هر ~۶ ثانیه ۳ نمونه‌ی UDP کوچیک (STUN) از تونل می‌فرسته و کیفیت زنده رو (۴۰ نمونه‌ی اخیر) به‌روز می‌کنه.
     سرور رو خودش عوض نمی‌کنه (وسط تماس تعویض = قطع تماس)؛ فقط اندازه می‌گیره و نشون می‌ده."""
@@ -1061,55 +1089,129 @@ def call_monitor(gen):
             ring.extend([None] * 3 if r is None else r)
             S["call"] = dict(cfgcall.assess(list(ring)), t=time.time())
     except Exception:
-        pass
+        raise
+
+
+CALL_KICK = threading.Event()
+CALL_RETRY_SECS, CALL_MAX_RETRIES = 180, 6  # فاصله‌ی جستجوی دوباره (ثانیه) و حداکثر دفعات
+CALL_SEARCH = threading.Lock()  # فقط یک جستجوی «سرور مناسب تماس» هم‌زمان
+
+
+def _call_note(cur, extra=""):
+    S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']} (MOS≈{cur['mos']})" + (f" — {extra}" if extra else "")
+
+
+def _call_try_switch(gen, profile, cur, best):
+    """به سرور `best` می‌پره، دوباره از داخل تونلش تماس رو می‌سنجه؛ بهتر نبود برمی‌گرده. True = جابه‌جا شد."""
+    with SWITCH:
+        if GEN[0] != gen or not CALL[0] or STOP.is_set():
+            return False
+        prev = list(POOL["active"])
+        sel = start_xray([best], profile)
+        ms = probe_retry(3, 3)
+        nq = cfgcall.measure_via(SOCKS, 12) if ms else None
+        if ms and nq and cfgcall.call_ok(nq, "fair") and nq["mos"] > cur["mos"]:
+            POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
+            set_active(sel, ms)
+            POOL["switches"] += 1
+            POOL["sites"] = None
+            save_good(sel)
+            sw_mark("حالت تماس: سرور بهتر برای تماس")
+            S["call"] = dict(nq, t=time.time())
+            callmem_note(sel[0], nq)
+            S["note"] = f"برای تماس به سرور بهتری رفتی: {nq['grade_fa']} (MOS≈{nq['mos']})"
+            return True
+        start_xray(prev, profile)  # بهتر نبود؛ برگرد
+        return False
 
 
 def call_prepare(gen, profile, switch=True):
-    """حالت تماس تازه روشن شده: اتصال فعلی رو برای UDP می‌سنجه؛ جایگزین‌های آماده رو هم می‌سنجه و اگه یکی واضحاً بهتره
-    (حداقل یک درجه بالاتر و MOS بیشتر) و سایت‌ها رو باز می‌کنه، با بازگشت خودکار بهش می‌پره. وسط تماس هیچ‌وقت صدا زده نمی‌شه."""
+    """حالت تماس روشن شد: خودش دنبال سرور مناسب تماس می‌گرده، کاربر نباید کاری بکنه.
+    ۱) اتصال فعلی رو برای UDP می‌سنجه؛ اگه خوب یا عالیه همون می‌مونه.
+    ۲) وگرنه جایگزین‌های آماده (که سه سایت رو باز می‌کنن) رو دسته‌دسته می‌سنجه (اول روش‌هایی که روی همین شبکه خوب بوده)
+       و به اولین سرور «قابل‌قبول یا بهتر» که واقعاً از داخل تونلش هم تأیید بشه می‌پره.
+    ۳) اگه چیزی پیدا نشد بهترین موجود می‌مونه و هر چند دقیقه دوباره می‌گردم (تا وقتی حالت تماس روشنه).
+    ۴) اگه روی هیچ سروری UDP جواب نداد، یعنی احتمالاً STUN روی این شبکه بسته‌ست؛ «بد» حساب نمی‌شه و سرور عوض نمی‌شه.
+    وسط تماس هیچ‌وقت سرور رو عوض نمی‌کنه (فقط موقع روشن‌کردن یا درخواست کاربر)."""
+    if not CALL_SEARCH.acquire(blocking=False):
+        return
     try:
-        cur = cfgcall.measure_via(SOCKS, 16)
-        if cur is None or GEN[0] != gen or not CALL[0]:
-            return
-        S["call"] = dict(cur, t=time.time())
-        if POOL["active"]:
-            callmem_note(POOL["active"][0], cur)
-        S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']} (MOS≈{cur['mos']})"
-        cand = sorted([c for c in POOL["standby"] if sites_ok(c)], key=eff)[:6]
-        if not cand:
-            return
-        S["note"] = "حالت تماس: دارم جایگزین‌های آماده رو برای تماس می‌سنجم ..."
-        res = check_many(cand, 1, 4, 6, sites=False)  # CALL روشنه؛ هر نتیجه «call» داره
-        by = {c["raw"]: c for c in POOL["standby"]}
-        for r in res:
-            if r.get("call") and r["raw"] in by:
-                by[r["raw"]]["call"] = r["call"]
-        S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']} (MOS≈{cur['mos']})"
-        good = sorted([r for r in res if solid(r) and cfgcall.call_ok(r.get("call"), "good")], key=call_key)
-        gi = cfgcall.GRADES.index
-        if not switch or not good or GEN[0] != gen or STOP.is_set():
-            return
-        if gi(good[0]["call"]["grade"]) <= gi(cur["grade"]) or good[0]["call"]["mos"] <= cur["mos"] + 0.2:
-            return  # سرور فعلی همین‌قدر خوبه؛ تعویضِ بی‌دلیل خودش ریسکه
-        with SWITCH:
-            prev = list(POOL["active"])
-            sel = start_xray(good[:1], profile)
-            ms = probe_retry(3, 3)
-            nq = cfgcall.measure_via(SOCKS, 12) if ms else None
-            if ms and nq and cfgcall.call_ok(nq, "fair") and nq["mos"] > cur["mos"]:
-                POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
-                set_active(sel, ms)
-                POOL["switches"] += 1
-                POOL["sites"] = None
-                save_good(sel)
-                sw_mark("حالت تماس: سرور بهتر برای تماس")
-                S["call"] = dict(nq, t=time.time())
-                S["note"] = f"برای تماس به سرور بهتری رفتی: {nq['grade_fa']} (MOS≈{nq['mos']})"
-            else:
-                start_xray(prev, profile)  # بهتر نبود؛ برگرد
-                S["note"] = f"حالت تماس: کیفیت فعلی {cur['grade_fa']}؛ جایگزین بهتری پیدا نشد"
+        tried, rounds_left, retries = set(), 6, 0
+        while GEN[0] == gen and CALL[0] and not STOP.is_set():
+            cur = cfgcall.measure_via(SOCKS, 16)
+            if cur is None or GEN[0] != gen or not CALL[0]:
+                return
+            S["call"] = dict(cur, t=time.time())
+            if POOL["active"]:
+                callmem_note(POOL["active"][0], cur)
+            _call_note(cur)
+            if cfgcall.call_ok(cur, "good") or not switch:
+                return
+            any_udp, best_seen = bool(cur.get("udp_ok")), None
+            found = False
+            while rounds_left > 0 and GEN[0] == gen and CALL[0] and not STOP.is_set():
+                pool = [c for c in POOL["standby"] if c["raw"] not in tried and sites_ok(c)]
+                cand = sorted(pool, key=lambda c: (call_key(c), eff(c)))[:6]
+                if not cand:
+                    break
+                rounds_left -= 1
+                tried.update(c["raw"] for c in cand)
+                _call_note(cur, f"دارم سرور مناسب تماس می‌گردم ({len(tried)} سرور سنجیده شد) ...")
+                res = check_many(cand, 1, 4, 6, sites=False)  # CALL روشنه؛ هر نتیجه «call» داره
+                by = {c["raw"]: c for c in POOL["standby"]}
+                for r in res:
+                    q = r.get("call")
+                    if q and r["raw"] in by:
+                        by[r["raw"]]["call"] = q
+                        callmem_note(by[r["raw"]], q)
+                        any_udp = any_udp or bool(q.get("udp_ok"))
+                ok = sorted([r for r in res if solid(r) and cfgcall.call_ok(r.get("call"), "fair")], key=call_key)
+                if ok and (not best_seen or call_key(ok[0]) < call_key(best_seen)):
+                    best_seen = ok[0]
+                if not ok or GEN[0] != gen or STOP.is_set():
+                    continue
+                top = ok[0]
+                if (cfgcall.GRADES.index(top["call"]["grade"]) > cfgcall.GRADES.index(cur["grade"])
+                        or top["call"]["mos"] > cur["mos"] + 0.2):
+                    if _call_try_switch(gen, profile, cur, top):
+                        found = True
+                        break
+            if found:
+                return
+            if not any_udp and tried:
+                S["note"] = "حالت تماس: روی هیچ سروری UDP جواب نداد؛ احتمالاً STUN روی این شبکه بسته‌ست و این به‌معنی «بد بودن» نیست. سرور عوض نشد."
+                return
+            cur = S.get("call") or cur
+            if cfgcall.call_ok(cur, "fair"):
+                _call_note(cur, "جایگزین بهتری پیدا نشد")
+                return
+            if retries >= CALL_MAX_RETRIES:
+                _call_note(cur, "جایگزین بهتری پیدا نشد؛ جستجو متوقف شد (دکمه‌ی «بهترین سرور برای تماس» دوباره می‌گرده)")
+                return
+            retries += 1
+            _call_note(cur, f"بهترین موجود فعلاً همینه؛ تا چند دقیقه دیگه دوباره می‌گردم (بار {retries})")
+            CALL_KICK.clear()
+            for _ in range(int(CALL_RETRY_SECS)):  # ~۳ دقیقه؛ سرورهای تازه مدام اضافه می‌شن (دکمه‌ی «بهترین سرور برای تماس» بیدارش می‌کنه)
+                if GEN[0] != gen or not CALL[0] or STOP.is_set():
+                    return
+                if CALL_KICK.wait(1):
+                    CALL_KICK.clear()
+                    retries = 0
+                    break
+            tried.clear()
+            rounds_left = 3
     except Exception:
         pass
+    finally:
+        CALL_SEARCH.release()
+
+
+def _call_after_connect(gen, profile):
+    for _ in range(12):  # چند ثانیه صبر تا سرورهای آماده (standby) پر بشن
+        if GEN[0] != gen or not CALL[0] or STOP.is_set():
+            return
+        time.sleep(1)
+    call_prepare(gen, profile, True)
 
 
 def upgrade_check(gen, profile, hist):
@@ -1952,6 +2054,7 @@ def sites_guard(gen, profile, found):
         GUARD_LOCK.release()
 
 
+@resilient
 def sites_watch(gen, profile, found):
     """هر SITE_EVERY ثانیه (۶۰) دسترسی به سه سایت رو از داخل تونل دوباره چک می‌کنه. اگه سرور خوب بعداً خراب شد
     (مثلاً یوتیوب بسته شد) بعد از یک تأیید دوباره، خودش بدون دخالت تو سرور بهتری پیدا می‌کنه و جابه‌جا می‌شه.
@@ -1987,7 +2090,7 @@ def sites_watch(gen, profile, found):
             if bad_n >= 3:
                 sites_guard(gen, profile, found)
     except Exception:
-        pass
+        raise
 
 
 def _sites_guard(gen, profile, found):
@@ -2534,6 +2637,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             threading.Thread(target=sites_watch, args=(GEN[0], profile, found), daemon=True).start()
             threading.Thread(target=bench_loop, args=(GEN[0],), daemon=True).start()
             threading.Thread(target=call_monitor, args=(GEN[0],), daemon=True).start()
+            if CALL[0]:  # حالت تماس از قبل روشن بوده؛ بعد از وصل‌شدن خودش دنبال سرور مناسب تماس می‌گرده
+                threading.Thread(target=_call_after_connect, args=(GEN[0], profile), daemon=True).start()
 
         finished, why = 0, ""
         while not STOP.is_set():
@@ -2987,7 +3092,10 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.reply(200, {"ok": True, "q": S["call"], "tips": call_tips(q)})
         if p == "/api/call/best":
             if S["stage"] == "connected" and CALL[0]:
-                threading.Thread(target=call_prepare, args=(GEN[0], CUR[0], True), daemon=True).start()
+                if CALL_SEARCH.locked():
+                    CALL_KICK.set()  # جستجو در جریانه (یا منتظر دوره‌ی بعدیه)؛ همین الان دوباره بگرده
+                else:
+                    threading.Thread(target=call_prepare, args=(GEN[0], CUR[0], True), daemon=True).start()
             return self.reply(200, {"ok": True})
         if p == "/api/start":
             global PIPE
@@ -2998,9 +3106,13 @@ class H(http.server.BaseHTTPRequestHandler):
             POOL["tiers"] = None
             if _in(j.get("speed"), SPEEDS):
                 SPEED[0] = j["speed"]
-            if PIPE and PIPE.is_alive():
-                STOP.set()
-                PIPE.join(8)
+            with START_LOCK:  # دو «شروع» پشت‌سرهم دو اجرای هم‌زمان نسازن
+                if PIPE and PIPE.is_alive():
+                    STOP.set()
+                    PIPE.join(20)
+                if PIPE and PIPE.is_alive():  # اجرای قبلی هنوز در حال بسته‌شدنه؛ اجرای تازه روی دست اون شروع نمی‌شه
+                    S["msg"] = "اجرای قبلی هنوز در حال توقفه؛ چند ثانیه بعد دوباره شروع کن."
+                    return self.reply(200, {"ok": False, "error": "busy"})
             prof = j.get("profile") if _in(j.get("profile"), cfgforge.PROFILES) else "balanced"
             PIPE = threading.Thread(target=pipeline, args=(prof, bool(j.get("quick", True)),
                                                            bool(j.get("sysproxy", True)),
@@ -3021,7 +3133,13 @@ class H(http.server.BaseHTTPRequestHandler):
             else:
                 S["msg"] = "در حال لغو ..."
         elif p == "/api/clean":
+            if PIPE and PIPE.is_alive():  # عملیات جاری نباید بعد از پاک‌سازی دوباره نتیجه بنویسه
+                STOP.set()
+                PIPE.join(10)
             disconnect(silent=True)
+            SITE_CACHE.clear()
+            POOL["tiers"] = None
+            PREFETCH.update(links=[], stats={}, t=0.0, origin={})
             RUN.clear()
             RUN.update(report.new_stats())
             CUM.clear()
@@ -3404,6 +3522,17 @@ def _proc_is_ours(pid):
 def main():
     global PORT, TOKEN, _lock
     DATA.mkdir(parents=True, exist_ok=True)
+    # اول قفل تک‌نمونه‌ای؛ تا مطمئن نشدیم نمونه‌ی دیگه‌ای نیست، به PID و پراکسی دست نمی‌زنیم
+    _lock = socket.socket()
+    try:
+        if not ANDROID:
+            _lock.bind(("127.0.0.1", LOCK_PORT))
+    except OSError:  # نسخه‌ی دیگه‌ای در حال اجراست؛ همون پنجره رو دوباره باز کن
+        try:
+            open_window(json.loads((DATA / "run.json").read_text(encoding="utf-8"))["url"])
+        except Exception:
+            pass
+        return
     try:  # xray یتیمِ دفعه‌ی قبل (اگه برنامه ناگهانی بسته شده) پورت رو اشغال نکنه
         pid = int((DATA / "xray.pid").read_text(encoding="utf-8").strip())
         if not _proc_is_ours(pid):
@@ -3419,16 +3548,6 @@ def main():
     CUM.update(report.load(STATS_FILE))
     load_block()
     restore_proxy()  # اگه دفعه‌ی قبل ناگهانی بسته شده بود، تنظیم قبلی پروکسی برمی‌گرده
-    _lock = socket.socket()
-    try:
-        if not ANDROID:
-            _lock.bind(("127.0.0.1", LOCK_PORT))
-    except OSError:  # نسخه‌ی دیگه‌ای در حال اجراست؛ همون پنجره رو دوباره باز کن
-        try:
-            open_window(json.loads((DATA / "run.json").read_text(encoding="utf-8"))["url"])
-        except Exception:
-            pass
-        return
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
     PORT, TOKEN = srv.server_address[1], secrets.token_urlsafe(16)
     url = f"http://127.0.0.1:{PORT}/?t={TOKEN}"
