@@ -36,6 +36,10 @@ public class CoreService extends VpnService {
     private static final int NOTIF_ID = 1;
     private static final String MAPDNS = "198.18.0.2";
 
+    static final String ACTION_QUIT = "app.configtool.QUIT";
+    /** نمونه‌ی در حال اجرا (برای «خروج کامل» از رابط). */
+    static volatile CoreService instance;
+
     /** آدرس رابط (با توکن)؛ MainActivity منتظرش می‌ماند. */
     static volatile String url;
     static volatile String error;
@@ -50,10 +54,14 @@ public class CoreService extends VpnService {
     private Thread tproxyThread;
     private boolean revoked;
     private String lastNotif = "";
+    private volatile boolean quitting;
+    private long lastEnv;          // آخرین ارسال وضعیت گوشی به کنترلر منابع پایتون
+    private volatile int trim;     // بالاترین سطح onTrimMemory از آخرین ارسال
 
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(CHANNEL, "اتصال", NotificationManager.IMPORTANCE_LOW);
             ch.setShowBadge(false);
@@ -64,17 +72,80 @@ public class CoreService extends VpnService {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIF_ID, buildNotif("در حال آماده‌سازی …"));
-        if (wakeLock == null) {
+        if (intent != null && ACTION_QUIT.equals(intent.getAction())) { // دکمه‌ی «خروج کامل» در اعلان
+            fullQuit(false, false);
+            return START_NOT_STICKY;
+        }
+        if (wakeLock == null) { // فقط ساخته می‌شود؛ بیدارنگه‌دار فقط وقتی لازم است (در حال اتصال/جستجو) گرفته می‌شود
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "configtool:core");
             wakeLock.setReferenceCounted(false);
-            wakeLock.acquire();
         }
         if (monitor == null) {
             monitor = new Thread(this::run, "core-monitor");
             monitor.start();
         }
         return START_NOT_STICKY; // اگه سیستم کشتش، بدون رابط دوباره بالا نیاد
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level > trim) trim = level; // سیستم رم می‌خواهد؛ در ارسال بعدی (حداکثر ~۵ ثانیه) به پایتون می‌رسد
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // کاربر برنامه را از لیست برنامه‌های اخیر پاک کرد = بستن کامل؛ هیچ چیزی در پس‌زمینه نمی‌ماند
+        fullQuit(false, false);
+    }
+
+    /**
+     * بستن کامل: جستجو و اتصال و xray/sing-box متوقف، TUN بسته، بیدارنگه‌دار آزاد، اعلان حذف، صفحه از لیست اخیر حذف و خودِ پروسه کشته می‌شود
+     * (پایتون داخل همین پروسه است؛ پس بعد از این هیچ نخی از برنامه نمی‌ماند). wipe: همه‌ی داده‌ی برنامه هم پاک می‌شود؛ uninstall: صفحه‌ی حذف اندروید باز می‌شود.
+     */
+    void fullQuit(final boolean wipe, final boolean uninstall) {
+        if (stopping && quitting) return;
+        quitting = true;
+        stopping = true;
+        new Thread(() -> {
+            try {
+                if (mod != null) mod.callAttr("quit_all", wipe);
+            } catch (Throwable t) {
+                Log.w(TAG, "quit_all", t);
+            }
+            closeTun();
+            try {
+                if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+            } catch (Throwable ignored) {
+            }
+            if (wipe) {
+                deleteTree(getFilesDir());
+                deleteTree(getCacheDir());
+                getSharedPreferences("app", MODE_PRIVATE).edit().clear().commit();
+            }
+            try {
+                stopForeground(true);
+                ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE)).cancelAll();
+            } catch (Throwable ignored) {
+            }
+            MainActivity a = MainActivity.current;
+            if (a != null) a.afterQuit(uninstall);
+            try {
+                Thread.sleep(uninstall ? 900 : 300);
+            } catch (InterruptedException ignored) {
+            }
+            stopSelf();
+            android.os.Process.killProcess(android.os.Process.myPid());
+            System.exit(0);
+        }, "full-quit").start();
+    }
+
+    private static void deleteTree(File f) {
+        if (f == null) return;
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteTree(k);
+        f.delete();
     }
 
     @Override
@@ -88,6 +159,7 @@ public class CoreService extends VpnService {
     @Override
     public void onDestroy() {
         stopping = true;
+        instance = null;
         closeTun();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         super.onDestroy();
@@ -125,6 +197,17 @@ public class CoreService extends VpnService {
     }
 
     private void tick() throws Exception {
+        long nowMs = System.currentTimeMillis();
+        if (nowMs - lastEnv >= 5000) { // رم/دما/باتری گوشی ⇒ کنترلر منابع (cfgres.py)؛ خطایش نباید حلقه را بیندازد
+            lastEnv = nowMs;
+            try {
+                int tl = trim;
+                trim = 0;
+                mod.callAttr("set_env", ResMonitor.collect(this, tl));
+            } catch (Throwable t) {
+                Log.w(TAG, "set_env", t);
+            }
+        }
         JSONObject st = new JSONObject(mod.callAttr("status").toString());
         String stage = st.optString("stage");
         boolean want = st.optBoolean("want");
@@ -132,6 +215,10 @@ public class CoreService extends VpnService {
         boolean connected = "connected".equals(stage);
         boolean busy = connected || "running".equals(stage);
         if (!busy) revoked = false;
+        if (wakeLock != null) { // بیدارنگه‌دار فقط در حال اتصال/جستجو؛ با سقف زمانی تا اگر چیزی گیر کرد گوشی تا ابد بیدار نماند
+            if (busy) wakeLock.acquire(10 * 60 * 1000L);
+            else if (wakeLock.isHeld()) wakeLock.release();
+        }
 
         boolean up = tun != null;
         if (!want || !busy || revoked) {
@@ -223,8 +310,10 @@ public class CoreService extends VpnService {
         int fl = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         PendingIntent pi = PendingIntent.getActivity(this, 0, open, fl);
         Notification.Builder nb = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
+        Intent q = new Intent(this, CoreService.class).setAction(ACTION_QUIT);
+        PendingIntent qi = PendingIntent.getService(this, 1, q, fl);
         return nb.setContentTitle("ConfigTool").setContentText(text).setSmallIcon(R.drawable.ic_stat)
-                .setContentIntent(pi).setOngoing(true).build();
+                .setContentIntent(pi).addAction(0, "خروج کامل", qi).setOngoing(true).build();
     }
 
     private void notifyText(String text) {

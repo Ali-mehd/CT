@@ -33,6 +33,9 @@ import java.net.HttpURLConnection;
 public class MainActivity extends Activity {
     private static final int REQ_VPN = 10, REQ_SAVE = 11;
 
+    /** نمونه‌ی زنده برای «خروج کامل» (CoreService صدا می‌زند). */
+    static volatile MainActivity current;
+
     private WebView web;
     private TextView info;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -42,6 +45,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        current = this;
         info = new TextView(this);
         info.setTextColor(0xffe0e5ec);
         info.setBackgroundColor(0xff14181e);
@@ -207,9 +211,27 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (current == this) current = null;
         ui.removeCallbacksAndMessages(null);
         web.destroy();
         super.onDestroy();
+    }
+
+    /** بعد از «خروج کامل»: صفحه از لیست اخیر حذف می‌شود؛ در حالت حذف، صفحه‌ی حذف خود اندروید باز می‌شود (حذف بی‌صدا در اندروید ممکن نیست). */
+    void afterQuit(final boolean uninstall) {
+        runOnUiThread(() -> {
+            try {
+                if (uninstall) {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + getPackageName())));
+                    } catch (Exception e) {
+                        startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+                    }
+                }
+                finishAndRemoveTask();
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     /** فقط به صفحه‌ی خود برنامه داده می‌شود (ناوبری به جای دیگه بسته است). */
@@ -222,6 +244,20 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void batterySettings() {
             ui.post(MainActivity.this::openBatterySettings);
+        }
+
+        @JavascriptInterface
+        public void quitAll() {
+            CoreService s = CoreService.instance;
+            if (s != null) s.fullQuit(false, false);
+            else ui.post(() -> afterQuit(false));
+        }
+
+        @JavascriptInterface
+        public void uninstall() {
+            CoreService s = CoreService.instance;
+            if (s != null) s.fullQuit(true, true);
+            else ui.post(() -> afterQuit(true));
         }
 
         @JavascriptInterface
