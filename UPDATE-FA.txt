@@ -1,0 +1,14 @@
+به‌روزرسانی اندروید بدون حذف و نصب دوباره
+
+شرط اندروید: همون applicationId، همون کلید امضا، و versionCode بزرگ‌تر. versionCode حالا خودکار از شماره‌ی اجرای Actions می‌آد.
+فقط کلید امضا مونده که باید ثابت بشه (تا الان هر بیلد با یک کلید موقت امضا می‌شد):
+
+۱) یک‌بار روی کامپیوترت:   pip install cryptography   و بعد   python scripts/make_keystore.py
+   (JDK داری؟ scripts/make_keystore.sh هم همین کار رو می‌کنه.)
+۲) توی گیت‌هاب ریپوی CT:  Settings ← Secrets and variables ← Actions ← New repository secret
+   KEYSTORE_B64      = مقدار خط KEYSTORE_B64=...
+   KEYSTORE_PASSWORD = مقدار خط KEYSTORE_PASSWORD=...
+۳) فایل release.keystore و رمز رو جایی امن نگه دار (هیچ‌وقت آپلودشون نکن). اگه گم بشه، دیگه نمی‌تونی روی نسخه‌ی قبلی نصب کنی.
+۴) Actions ← build-apk ← Run workflow. توی خلاصه‌ی اجرا «اثرانگشت امضا» رو می‌بینی؛ بین بیلدها باید یکی باشه.
+
+یک‌بار حذف لازمه: APK فعلی روی گوشی‌ت با کلید موقت امضا شده؛ همون یک بار حذفش کن و نسخه‌ی کلید-ثابت رو نصب کن. از اون به بعد هر APK جدید روی قبلی نصب می‌شه و تنظیمات و داده‌ها می‌مونن.
