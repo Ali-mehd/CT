@@ -239,7 +239,8 @@ def apply_live(j, old):
         SPEED[0] = sp
         if ann:
             gs = cfgres.GOV.summary() if (cfgres is not None and ANDROID) else ""
-            msgs.append(f"سرعت اسکن روی «{FA_SPEED.get(sp, sp)}» رفت و همین الان اعمال شد." + (f" (ولی {gs})" if gs else ""))
+            msgs.append(f"سرعت اسکن روی «{FA_SPEED.get(sp, sp)}» ذخیره شد." + (" ولی حالت تماس روشنه و سرعت اسکن رو خودش مدیریت می‌کنه؛ بعد از خاموش‌شدنش اعمال می‌شه."
+                        if CALL[0] else " و همین الان اعمال شد.") + (f" (ولی {gs})" if gs else ""))
     md = j.get("mode")
     if _in(md, ("stable", "fast", "off")):
         ann = changed("mode", MODE[0])
@@ -305,7 +306,7 @@ def save_settings(j):
         cur["mode"] = j["mode"]
     if _in(j.get("speed"), SPEEDS):
         cur["speed"] = j["speed"]
-    for k in ("quick", "sysproxy", "tgonly", "autosrc", "call", "autores", "netprobe", "evolve_ok", "hc", "onboarded"):
+    for k in ("quick", "sysproxy", "tgonly", "autosrc", "call", "autores", "netprobe", "evolve_ok", "hc", "onboarded", "ui2"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
     fs = j.get("fs")
@@ -970,7 +971,7 @@ def _callmem_load():
             if not isinstance(ctx, str) or not isinstance(ms, dict):
                 continue
             out[ctx] = {k: [float(v[0]), float(v[1]), float(v[2])] for k, v in list(ms.items())[:40]
-                        if isinstance(k, str) and isinstance(v, list) and len(v) == 3 and all(isinstance(x, (int, float)) for x in v)}
+                        if isinstance(k, str) and isinstance(v, list) and len(v) == 3 and all(isinstance(x, (int, float)) and math.isfinite(x) and 0 <= x <= 4e9 for x in v)}
         CALLMEM["a"] = out
     except Exception:
         CALLMEM["a"] = {}
@@ -983,7 +984,7 @@ def callmem_save(force=False):
         _callmem_state.update(dirty=False, t=time.time())
         try:
             DATA.mkdir(parents=True, exist_ok=True)
-            CALLMEM_FILE.write_text(json.dumps(CALLMEM), encoding="utf-8")
+            _atomic(CALLMEM_FILE, json.dumps(CALLMEM))
         except OSError:
             pass
 
@@ -1002,7 +1003,12 @@ def callmem_note(c, q):
         ms = CALLMEM["a"].setdefault(ctx, {})
         e = ms.get(call_method(c)) or [0.0, 0.0, now]
         f = 0.5 ** (max(0.0, now - e[2]) / CALL_HALF)
-        ms[call_method(c)] = [e[0] * f + 1, e[1] * f + float(q.get("mos") or 1.0), now]
+        try:
+            mos = float(q.get("mos") or 1.0)
+        except (TypeError, ValueError):
+            mos = 1.0
+        mos = min(4.5, max(1.0, mos)) if math.isfinite(mos) else 1.0  # NaN/بی‌نهایت میانگین رو خراب نکنه
+        ms[call_method(c)] = [e[0] * f + 1, e[1] * f + mos, now]
         for k in sorted(ms, key=lambda k: ms[k][2])[:-40]:
             ms.pop(k, None)
         for k in sorted(CALLMEM["a"], key=lambda k: max([v[2] for v in CALLMEM["a"][k].values()] or [0]))[:-8]:
@@ -1066,9 +1072,28 @@ def net_view():
         return None
 
 
+def call_phase():
+    """مرحله‌ی حالت تماس برای نمایش: connecting / searching / locked / monitoring / no_udp / idle"""
+    if not CALL[0]:
+        return ""
+    st = S["stage"]
+    if st == "running":
+        return "connecting"
+    if st != "connected":
+        return "idle"
+    if CALL_SEARCH.locked():
+        return "waiting" if CALL_WAIT[0] else "searching"
+    q = S.get("call")
+    if q and not q.get("udp_ok"):
+        return "no_udp"
+    return "locked" if (q and cfgcall.call_ok(q, "good")) else "monitoring"
+
+
 def call_state():
     q = S.get("call") if CALL[0] else None
-    return dict(on=CALL[0], q=q, tips=call_tips(q), tg=f"tg://socks?server=127.0.0.1&port={SOCKS}", android=bool(ANDROID))
+    managed = dict(mode=eff_mode(MODE[0]), speed=eff_speed(), speed_user=SPEED[0], mode_user=MODE[0]) if CALL[0] else None
+    return dict(on=CALL[0], q=q, tips=call_tips(q), tg=f"tg://socks?server=127.0.0.1&port={SOCKS}", android=bool(ANDROID),
+                phase=call_phase(), managed=managed)
 
 
 @resilient
@@ -1094,6 +1119,7 @@ def call_monitor(gen):
 
 CALL_KICK = threading.Event()
 CALL_RETRY_SECS, CALL_MAX_RETRIES = 180, 6  # فاصله‌ی جستجوی دوباره (ثانیه) و حداکثر دفعات
+CALL_WAIT = [False]  # جستجو فعلاً خوابیده و منتظر دور بعدیه (برای نمایش درست مرحله)
 CALL_SEARCH = threading.Lock()  # فقط یک جستجوی «سرور مناسب تماس» هم‌زمان
 
 
@@ -1191,6 +1217,7 @@ def call_prepare(gen, profile, switch=True):
             retries += 1
             _call_note(cur, f"بهترین موجود فعلاً همینه؛ تا چند دقیقه دیگه دوباره می‌گردم (بار {retries})")
             CALL_KICK.clear()
+            CALL_WAIT[0] = True
             for _ in range(int(CALL_RETRY_SECS)):  # ~۳ دقیقه؛ سرورهای تازه مدام اضافه می‌شن (دکمه‌ی «بهترین سرور برای تماس» بیدارش می‌کنه)
                 if GEN[0] != gen or not CALL[0] or STOP.is_set():
                     return
@@ -1198,11 +1225,13 @@ def call_prepare(gen, profile, switch=True):
                     CALL_KICK.clear()
                     retries = 0
                     break
+            CALL_WAIT[0] = False
             tried.clear()
             rounds_left = 3
     except Exception:
         pass
     finally:
+        CALL_WAIT[0] = False
         CALL_SEARCH.release()
 
 
@@ -1257,8 +1286,23 @@ SITE_CACHE = {}  # نتیجه‌ی تست سه سایت برای هر سرور �
 SPEED = [load_settings().get("speed", "normal") if load_settings().get("speed") in ("gentle", "normal", "fast", "turbo") else "normal"]
 
 
+def eff_speed():
+    """سرعت اسکنِ مؤثر. حالت تماس فرمانده‌ست: وسط اتصال پردازش پس‌زمینه باید حداقل باشه (جیتر تماس رو بالا می‌بره)،
+    و موقع وصل‌شدن هم از «متعادل» تندتر نمی‌ره. انتخاب کاربر ذخیره می‌مونه و بعد از خاموش‌شدن حالت تماس دوباره اعمال می‌شه."""
+    sp = SPEED[0]
+    if CALL[0]:
+        return "gentle" if S["stage"] == "connected" else {"fast": "normal", "turbo": "normal"}.get(sp, sp)
+    return sp
+
+
+def eff_mode(m):
+    """حالت «کم‌پینگ» هر نیم‌ثانیه ترافیک سنجش می‌فرسته و زود سرور عوض می‌کنه؛ وسط تماس مضره. حالت تماس اون رو «هوشمند» می‌کنه.
+    «ثابت» انتخاب صریح کاربره و می‌مونه."""
+    return "stable" if (CALL[0] and m == "fast") else m
+
+
 def speed_params():
-    p = dict(SPEEDS[SPEED[0]])
+    p = dict(SPEEDS[eff_speed()])
     if _ev:  # تعداد تست هم‌زمان خودکار کم و زیاد می‌شه؛ نرخ ارسال (rate) دست‌نخورده می‌مونه
         p = _ev.tune_params(p)
     if os.environ.get("CFG_ANDROID"):  # گوشی: حافظه و باتری محدوده؛ پردازه‌ی xray زیاد باعث بسته‌شدن برنامه توسط اندروید می‌شه
@@ -1361,7 +1405,7 @@ def supervisor(gen, profile, sysproxy, mode):
     hist, fails, warned = deque(maxlen=45), 0, False
     t_switch = t_eval = t_ref = time.time()
     while GEN[0] == gen and S["stage"] == "connected":
-        mode = MODE[0]  # کاربر وسط اتصال حالت جابه‌جایی رو عوض کرده باشه همین لحظه اعمال می‌شه
+        mode = eff_mode(MODE[0])  # کاربر وسط اتصال حالت جابه‌جایی رو عوض کرده باشه همین لحظه اعمال می‌شه؛ حالت تماس «کم‌پینگ» رو هوشمند می‌کنه
         time.sleep(0.5 if (mode == "fast" or fails) else random.uniform(2.0, 4.0))  # سالم: کم‌تعداد و نامنظم؛ مشکوک: سریع‌تر
         if GEN[0] != gen or S["stage"] != "connected":
             return
@@ -1798,7 +1842,10 @@ def bad_save(force=False):
 def bad_key(c, scoped=False):
     """scoped=True: کلید مخصوص «همین شبکه» (اپراتور/مودم) برای شکست‌های وابسته به شبکه (dead/sites)؛ «خطرناک» بودن ویژگی خود سروره و سراسریه."""
     ctx = f"|{NETID[0]}" if scoped and NETID[0] else ""
-    raw = f"{BAD['salt']}|{c.get('host')}|{c.get('port')}|{c.get('proto')}{ctx}"
+    # پشت CDN (SNI یا Host جدا از آدرس) هزاران سرور مستقل روی یک IP:پورت مشترکن؛ یک کانفیگ مرده یا مخرب نباید بقیه‌ی اون IP رو قرنطینه کنه
+    fr = c.get("sni") or c.get("hosthdr") or ""
+    front = f"|{c.get('sni') or ''}|{c.get('hosthdr') or ''}" if fr and fr != c.get("host") else ""
+    raw = f"{BAD['salt']}|{c.get('host')}|{c.get('port')}|{c.get('proto')}{front}{ctx}"
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -1867,12 +1914,27 @@ def _commit_bad(pend):
         pass
 
 
+_SEC_SEEN = set()
+_SEC_SRC = {}
+
+
 def sec_record(c, dangerous):
     """نتیجه‌ی تست امنیتی یک سرور سالم رو به ویژگی‌هاش (پروتکل، ترنسپورت، پورت، منبع) نسبت می‌ده."""
     try:
         with _learn_lock:
+            who = (c.get("sni") or c.get("hosthdr") or c.get("host") or "", int(time.time() // 86400))
+            if who in _SEC_SEEN:  # هر دامنه/سرور در روز فقط یک بار؛ هزار پورت یک سرور مخرب، ریسکِ عمومی پروتکل رو خراب نکنه
+                return
+            if len(_SEC_SEEN) > 50000:
+                _SEC_SEEN.clear()
+            _SEC_SEEN.add(who)
+            sk = (str(c.get("srcurl") or ""), who[1])  # هر منبع در روز حداکثر ۵ «خطرناک» به ویژگی‌های عمومی (پروتکل، ترنسپورت، پورت) می‌دهد
+            if len(_SEC_SRC) > 5000:
+                _SEC_SRC.clear()
+            _SEC_SRC[sk] = _SEC_SRC.get(sk, 0) + (1 if dangerous else 0)
+            over = dangerous and bool(sk[0]) and _SEC_SRC[sk] > 5
             for k in learn_keys(c):
-                if k.startswith("t:"):
+                if k.startswith("t:") or (over and not k.startswith("u:")):
                     continue
                 v = LEARN["s"].setdefault(k, [0.0, 0.0])
                 v[0] += 1
@@ -1978,6 +2040,10 @@ def prune_sources():
     منبع‌های خودت (پیش‌فرض، کانال، دستی) هیچ‌وقت خودکار غیرفعال نمی‌شن."""
     try:
         db, ch, now = load_db(), False, time.time()
+        with _learn_lock:  # اگه تقریباً هیچ سروری از هیچ منبعی کار نمی‌کنه، مشکل از شبکه است (قطعی)، نه از منبع؛ منبع خاموش نشه
+            ot = sum(v[0] for k, v in LEARN["f"].items() if k.startswith("p:"))
+            oa = sum(v[1] for k, v in LEARN["f"].items() if k.startswith("p:"))
+        net_down = ot >= 200 and oa / ot < 0.03
         for x in db["sources"]:
             if x.get("kind") == "auto" and not x.get("on") and x.get("auto_off") and not x.get("revived") \
                     and now - float(x.get("off_t") or now) > 14 * 86400:
@@ -1987,7 +2053,7 @@ def prune_sources():
                 _learn_state["dirty"] = True
                 continue
             v = source_v(x["url"]) if x.get("kind") == "auto" and x.get("on") else None
-            if v and v[0] >= 200 and v[3] == 0 and v[1] / v[0] < 0.03:
+            if v and not net_down and v[0] >= 200 and v[3] == 0 and v[1] / v[0] < 0.03:
                 x["on"], x["auto_off"], x["off_t"], ch = False, True, now, True
         if ch:
             save_db(db)
@@ -2088,6 +2154,9 @@ def sites_watch(gen, profile, found):
                     break
                 bad_n += 1
             if bad_n >= 3:
+                if MODE[0] == "off":  # «خاموش» یعنی هیچ جابه‌جایی خودکاری (حتی با بسته‌شدن سایت‌ها)؛ فقط خبر می‌دیم
+                    S["note"] = "چند سایت از این سرور باز نمی‌شن؛ جابه‌جایی خودکار خاموشه و سرور عوض نشد."
+                    continue
                 sites_guard(gen, profile, found)
     except Exception:
         raise
@@ -2990,6 +3059,32 @@ def evolve_post(p, j):
     return {"ok": False, "errors": ["نامعلوم"]}
 
 
+def start_session(j):
+    """جستجو و اتصال با تنظیمات j (دکمه‌ی «اتصال» و حالت تماس هر دو از همین‌جا شروع می‌کنن)."""
+    global PIPE
+    DIRECT[0] = j.get("direct") if _in(j.get("direct"), cfgforge.COUNTRY_DIRECT) else ""
+    VPN_WANT[0] = bool(j.get("sysproxy", True))
+    TGONLY[0] = bool(j.get("tgonly", False))
+    SITE_CACHE.clear()
+    POOL["tiers"] = None
+    if _in(j.get("speed"), SPEEDS):
+        SPEED[0] = j["speed"]
+    with START_LOCK:  # دو «شروع» پشت‌سرهم دو اجرای هم‌زمان نسازن
+        if PIPE and PIPE.is_alive():
+            STOP.set()
+            PIPE.join(20)
+        if PIPE and PIPE.is_alive():  # اجرای قبلی هنوز در حال بسته‌شدنه؛ اجرای تازه روی دست اون شروع نمی‌شه
+            S["msg"] = "اجرای قبلی هنوز در حال توقفه؛ چند ثانیه بعد دوباره شروع کن."
+            return {"ok": False, "error": "busy"}
+    prof = j.get("profile") if _in(j.get("profile"), cfgforge.PROFILES) else "balanced"
+    PIPE = threading.Thread(target=pipeline, args=(prof, bool(j.get("quick", True)),
+                                                   bool(j.get("sysproxy", True)),
+                                                   j.get("mode") if _in(j.get("mode"), ("stable", "fast", "off")) else "stable"),
+                            daemon=True)
+    PIPE.start()
+    return {"ok": True}
+
+
 class H(http.server.BaseHTTPRequestHandler):
     timeout = 10  # اتصال نیمه‌باز (slowloris) بعد از ۱۰ ثانیه بسته می‌شه
 
@@ -3033,7 +3128,7 @@ class H(http.server.BaseHTTPRequestHandler):
             html = ((HERE / "ui.html").read_text(encoding="utf-8").replace("__T__", TOKEN)
                     .replace("<script>", f'<script nonce="{nonce}">', 1))
             if not _ev:  # تکامل (نصب وصله) فقط وقتی ماژولش هست؛ اندروید فایل‌های برنامه رو فقط‌خواندنی داره
-                html = html.replace('["evo","تکامل"],', "")
+                html = html.replace('id="sec-evo"', 'id="sec-evo" data-off="1"')
             csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src 'self' data:; "
                    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
             return self.reply(200, html.encode(), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
@@ -3083,6 +3178,9 @@ class H(http.server.BaseHTTPRequestHandler):
             save_settings({"call": on})
             if on and S["stage"] == "connected":
                 threading.Thread(target=call_prepare, args=(GEN[0], CUR[0], bool(j.get("switch", True))), daemon=True).start()
+            elif on and S["stage"] != "running":  # وصل نیستی: حالت تماس خودش با تنظیمات ذخیره‌شده اتصال رو شروع می‌کنه
+                sj = {k: v for k, v in load_settings().items() if k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "direct")}
+                threading.Thread(target=lambda: start_session(sj), daemon=True).start()
             return self.reply(200, {"ok": True, "call": call_state()})
         if p == "/api/call/test":
             if S["stage"] != "connected":
@@ -3098,27 +3196,9 @@ class H(http.server.BaseHTTPRequestHandler):
                     threading.Thread(target=call_prepare, args=(GEN[0], CUR[0], True), daemon=True).start()
             return self.reply(200, {"ok": True})
         if p == "/api/start":
-            global PIPE
-            DIRECT[0] = j.get("direct") if _in(j.get("direct"), cfgforge.COUNTRY_DIRECT) else ""
-            VPN_WANT[0] = bool(j.get("sysproxy", True))
-            TGONLY[0] = bool(j.get("tgonly", False))
-            SITE_CACHE.clear()
-            POOL["tiers"] = None
-            if _in(j.get("speed"), SPEEDS):
-                SPEED[0] = j["speed"]
-            with START_LOCK:  # دو «شروع» پشت‌سرهم دو اجرای هم‌زمان نسازن
-                if PIPE and PIPE.is_alive():
-                    STOP.set()
-                    PIPE.join(20)
-                if PIPE and PIPE.is_alive():  # اجرای قبلی هنوز در حال بسته‌شدنه؛ اجرای تازه روی دست اون شروع نمی‌شه
-                    S["msg"] = "اجرای قبلی هنوز در حال توقفه؛ چند ثانیه بعد دوباره شروع کن."
-                    return self.reply(200, {"ok": False, "error": "busy"})
-            prof = j.get("profile") if _in(j.get("profile"), cfgforge.PROFILES) else "balanced"
-            PIPE = threading.Thread(target=pipeline, args=(prof, bool(j.get("quick", True)),
-                                                           bool(j.get("sysproxy", True)),
-                                                           j.get("mode") if _in(j.get("mode"), ("stable", "fast", "off")) else "stable"),
-                                    daemon=True)
-            PIPE.start()
+            r = start_session(j)
+            if not r.get("ok"):
+                return self.reply(200, r)
         elif p == "/api/discover":
             if S["stage"] == "connected" and not DISC["running"]:
                 threading.Thread(target=discover_sources, kwargs={"force": True}, daemon=True).start()

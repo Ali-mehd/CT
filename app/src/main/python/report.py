@@ -57,6 +57,11 @@ def add_run(st, cfgs, blocked=0, unsupported=0, insecure=0):
             why = ("no_reach" if not reach else "tls" if "tls_verify_fail" in flags
                    else "tamper" if "tamper" in flags else "no_traffic")
             st["fails"][why] = st["fails"].get(why, 0) + 1
+    for k, cap in (("methods", 400), ("ports", 300)):  # سرور مخربی که روی همه‌ی پورت‌ها گوش می‌ده آمار و گزارش رو تا ابد بزرگ نکنه
+        d = st[k]
+        if len(d) > cap:
+            for key in sorted(d, key=lambda z: d[z]["tested"])[:len(d) - cap]:
+                del d[key]
 
 
 def _ok_cell(x):

@@ -60,7 +60,7 @@ def _associate(port, timeout):
         else:
             raise OSError("bad atyp")
         rport = struct.unpack(">H", _recv_exact(t, 2))[0]
-        if addr in ("0.0.0.0", "::") or not addr:
+        if addr not in ("127.0.0.1", "::1"):  # رله‌ی تونل محلی همیشه loopback است؛ آدرس دیگه‌ای که جواب بده نباید بسته‌ی UDP بگیره
             addr = "127.0.0.1"
         return t, (addr, rport)
     except Exception:

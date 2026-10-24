@@ -388,6 +388,16 @@ BLOCK_SOURCES = [
 ]
 
 
+BLOCK_MIN_PREFIX = 12  # پهن‌تر از /12 (بیش از ~۱ میلیون آدرس) هیچ‌وقت توی فهرست سیاه نمی‌آید
+_CANARY = [int(ipaddress.ip_address(a)) for a in ("1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.154.167.51",
+                                                   "104.16.0.1", "172.67.0.1", "142.250.80.46", "185.199.108.133")]
+
+
+def _hit_canary(lo, hi):
+    """آدرس‌های حیاتی (DNS عمومی، کلودفلر، گوگل، تلگرام، گیت‌هاب) هیچ‌وقت نباید در فهرست سیاه بیفتن."""
+    return any(lo <= c <= hi for c in _CANARY)
+
+
 class Blocklist:
     """فهرست سیاه IP (فقط IPv4): آدرس‌های تکی + بازه‌ها؛ جستجوی سریع با bisect."""
 
@@ -407,11 +417,12 @@ class Blocklist:
             try:
                 if "/" in t:
                     n = ipaddress.ip_network(t, strict=False)
-                    if n.version == 4:
+                    # یک خطِ غلط یا مسموم (مثل 0.0.0.0/0) کل اینترنت رو نبنده: بازه‌ی خیلی پهن یا شامل آدرس‌های شناخته‌شده رد می‌شه
+                    if n.version == 4 and n.prefixlen >= BLOCK_MIN_PREFIX and not _hit_canary(int(n.network_address), int(n.broadcast_address)):
                         nets.append((int(n.network_address), int(n.broadcast_address)))
                 else:
                     a = ipaddress.ip_address(t)
-                    if a.version == 4:
+                    if a.version == 4 and not _hit_canary(int(a), int(a)):
                         self.ips.add(int(a))
             except ValueError:
                 pass
