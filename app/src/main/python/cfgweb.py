@@ -882,11 +882,17 @@ def failover(gen, profile, sysproxy, mode):
         return _failover(gen, profile, sysproxy, mode)
 
 
+def standby_ok():
+    """جایگزین‌های واقعاً قابل‌استفاده (نه دو بار خراب‌شده و نه توی لیست سیاه ۱۰ دقیقه‌ای). هم جابه‌جایی خودکار و هم تب سرورها از همین استفاده می‌کنن تا با هم نخونن."""
+    bad, now = POOL.get("bad", {}), time.time()
+    return [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < now]
+
+
 def _failover(gen, profile, sysproxy, mode):
     """فقط وقتی واقعاً قطع/ضعیف شده: سرور جایگزین رو با تست دقیق (چند نمونه) انتخاب می‌کنه."""
     t0 = time.time()
     bad = POOL.setdefault("bad", {})
-    if not [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < time.time()]:
+    if not standby_ok():
         try:
             ms = probe(2.0)
         except Exception:
@@ -900,7 +906,7 @@ def _failover(gen, profile, sysproxy, mode):
     for c in POOL["active"]:
         c["strikes"] = c.get("strikes", 0) + 1
         bad[(c["host"], c["port"])] = time.time() + 600  # تا ۱۰ دقیقه برنمی‌گرده سراغش
-    rest = [c for c in POOL["standby"] if c.get("strikes", 0) < 2 and bad.get((c["host"], c["port"]), 0) < time.time()]
+    rest = standby_ok()
     fresh = time.time() - 90
     rest.sort(key=lambda c: (not sites_ok(c), call_key(c) if CALL[0] else (), flaky(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
     tried = set()
@@ -1550,6 +1556,7 @@ LEARN_MAX_KEYS = 5000
 # ---- یادگیری «به‌تفکیک شبکه» (اپراتور/مودم): ASN خودکار تشخیص داده می‌شه؛ از کاربر چیزی پرسیده نمی‌شه.
 # تجربه‌ی هر شبکه جدا نگه داشته می‌شه و کم‌کم (نیمه‌عمر) فراموش می‌شه؛ تجربه‌ی کلی فقط به‌عنوان «پیش‌فرضِ» شبکه‌ی ناشناس/تازه عمل می‌کنه.
 LEARN_NETS_MAX, LEARN_NET_KEYS, LEARN_M = 8, 400, 4.0
+GLOBAL_W_NEW, GLOBAL_W_KNOWN = 0.35, 0.1  # وزن یادگیری کلی (۰ تا ۱) برای شبکه‌ی تازه | شبکه‌ای که قبلاً چیزی ازش یاد گرفتیم
 HALF_DEF, HALF_T, HALF_U = 24 * 3600, 4 * 3600, 12 * 3600  # ساختاری ۲۴ ساعت | ساعت‌روز ۴ ساعت | منبع ۱۲ ساعت
 NETID = [""]  # شناسه‌ی شبکه‌ی «همین اجرا»؛ تا سنجش تموم نشده خالیه (تجربه‌ی شبکه‌ی قبلی به این شبکه نسبت داده نشه)
 _streak = {}
@@ -1739,10 +1746,13 @@ def learn_score(c, alive_only=False):
     f, sec = LEARN["f"], LEARN["s"]
     nk, now = net_key(), time.time()
     loc = LEARN["a"].get(nk, {}).get("k", {}) if nk else {}
+    gw = GLOBAL_W_NEW if not loc else GLOBAL_W_KNOWN  # یادگیری کلی از همه‌ی شبکه‌ها قاطیه؛ برای شبکه‌ی تازه کم‌اثر، برای شبکه‌ی شناخته‌شده تقریباً بی‌اثر
     for k in learn_keys(c):
         v = f.get(k)
         ga = (v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR  # کلی = پیش‌فرض شبکه‌ی تازه
         gs = (v[3] + 1) / (v[2] + 4) if v else LEARN_PRIOR
+        if k[:1] != "u":  # کیفیت «منبع» به شبکه وابسته نیست و همون‌طور می‌مونه؛ بقیه (پروتکل، پورت، ...) به شبکه وابسته‌ان
+            ga, gs = LEARN_PRIOR + gw * (ga - LEARN_PRIOR), LEARN_PRIOR + gw * (gs - LEARN_PRIOR)
         lv = loc.get(k)
         if lv:  # تجربه‌ی همین شبکه (با نیمه‌عمر) بر پیش‌فرض کلی غالب می‌شه؛ با داده‌ی کم به کلی نزدیکه (shrinkage)
             d = _decayed(lv, k, now)
@@ -1755,6 +1765,39 @@ def learn_score(c, alive_only=False):
         return sum(ar) / len(ar)
     risk = sum(rk) / len(rk)
     return (sum(ar) / len(ar)) * (sum(sr) / len(sr)) * (1 - min(0.9, risk * 2))  # الگوی بارها خطرناک‌شده امتیازش پایین میاد
+
+
+def src_score(url):
+    """چقدر این منبع «کانفیگ خوب» می‌ده (۰ تا ~۱): احتمال زنده بودن × احتمال باز کردن سایت‌ها، از تجربه‌ی همین شبکه روی تجربه‌ی کلی.
+    منبعی که کم تست شده یه امتیاز کنجکاوی کوچیک می‌گیره تا منبع تازه هم شانس بگیره، ولی منبع ثابت‌شده‌ی خوب همیشه جلوتره."""
+    k = _uk(url) if url else ""
+    v = LEARN["f"].get(k) if k else None
+    ga = (v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR
+    gs = (v[3] + 1) / (v[2] + 4) if v else LEARN_PRIOR
+    n = v[0] if v else 0.0
+    nk = net_key()
+    lv = (LEARN["a"].get(nk, {}).get("k", {}) if nk else {}).get(k) if k else None
+    if lv:
+        d = _decayed(lv, k, time.time())
+        ga, gs, n = (d[1] + LEARN_M * ga) / (d[0] + LEARN_M), (d[3] + LEARN_M * gs) / (d[2] + LEARN_M), d[0]
+    return ga * gs + 0.12 / (1.0 + n) ** 0.5
+
+
+def src_interleave(items):
+    """ترتیب تست: منبع‌های خوب سهم بیشتری از «اول صف» می‌گیرن، ولی هیچ منبعی کامل کنار گذاشته نمی‌شه.
+    (ترتیب داخل هر منبع همون ترتیب قبلیه.) بدون این، منبع‌های غول‌پیکر منبع‌های کوچیکِ خوب رو پشت خودشون گم می‌کردن."""
+    groups = {}
+    for c in items:
+        groups.setdefault(c.get("srcurl", ""), []).append(c)
+    if len(groups) < 2:
+        return list(items)
+    keyed = []
+    for gi, (u, g) in enumerate(groups.items()):
+        w = max(0.008, src_score(u))
+        for i, c in enumerate(g):
+            keyed.append(((i + 0.5) / w, gi, i, c))
+    keyed.sort(key=lambda x: x[:3])
+    return [x[3] for x in keyed]
 
 
 def learn_order(c):
@@ -2429,7 +2472,11 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 if not r or not r.get("net_ok"):
                     return
                 NETP["net"], net[0] = r, r
-                NETID[0] = "a:" + hashlib.sha256(r["asn"].encode()).hexdigest()[:10] if r.get("asn") else ""
+                try:  # نوع اتصال (مودم / نت همراه / هات‌اسپات) هم توی شناسه می‌ره؛ مودم و سیم‌کارتِ یک اپراتور قاطی نشن
+                    kd = netprobe.net_kind()
+                except Exception:
+                    kd = ""
+                NETID[0] = "a:" + hashlib.sha256(((r.get("asn") or "") + "|" + kd).encode()).hexdigest()[:10] if (r.get("asn") or kd) else ""
                 sc = netprobe.timeout_scale(r)
                 if sc > 1:
                     tmo[0], tmo[1] = min(tmo[0] * sc, 9), min(tmo[1] * sc, 18)
@@ -2528,6 +2575,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     continue
                 parsed.append(c)
             parsed.sort(key=lambda c: ("no_tls" in c["flags"], netprobe.priority(c, nt) if nt else 0, learn_order(c)))  # امیدوارکننده‌ترها (طبق تجربه‌ی قبلی) اول تست می‌شن
+            parsed = src_interleave(parsed)  # منبع‌های خوب جلوترن ولی منبع غول‌پیکر بقیه رو دفن نمی‌کنه
             for c in parsed:
                 cands.append(c)
                 if ended[0]:
@@ -2922,7 +2970,7 @@ def state():
     d["rsum"] = {k: RUN[k] for k in ("tested", "reach", "alive", "blocked")}
     d["rsum"]["runs_total"] = CUM["runs"]
     d["servers"] = [dict(describe(c), role="active") for c in POOL["active"]] + \
-                   [dict(describe(c), role="standby") for c in POOL["standby"][:12]]
+                   [dict(describe(c), role="standby") for c in standby_ok()[:12]]
     d["switches"], d["failover"] = POOL["switches"], FAILOVER.is_set()
     d["mode"] = MODE[0]
     d["ports"] = [SOCKS, HTTP]
@@ -2979,6 +3027,20 @@ def _cfg_row(c):
     return {k: c.get(k) for k in ("proto", "network", "security", "port", "ms", "kbps", "src", "alive", "reachable", "flow", "fp", "alpn", "scy", "frag", "mode", "insecure") if k in c}
 
 
+def _res_snapshot():
+    """وضعیت کنترل مصرف منابع گوشی (ضریب، دلیل کاهش، دما و رم) برای گزارش؛ فقط عددها، بدون هیچ داده‌ی شخصی."""
+    try:
+        if cfgres is None or not ANDROID:
+            return None
+        g = cfgres.GOV
+        env = {k: v for k, v in dict(g.env).items() if isinstance(v, (int, float, bool))}
+        return {"factor": round(g.s, 2), "why": str(g.why)[:200], "mem_live": g.mem_live, "proc_mb": g.proc_mb, "sensors": g.report_fa()[:300],
+                "env_age_s": round(time.time() - g.t_env, 1) if g.t_env else None, "env": env,
+                "log": [[round(a, 1), round(b, 2), str(c)[:80]] for a, b, c in list(g.log)[-30:]]}
+    except Exception:
+        return None
+
+
 def evolve_ctx():
     """آمار کامل برنامه برای گزارش تکامل. آدرس منبع‌های عمومی گیت‌هاب فقط به شکل «مالک/ریپو/فایل» میاد؛
     هیچ لینک شخصی، کانال، آدرس سرور یا توکنی نمیاد (و بعدش همه‌چیز دوباره فیلتر می‌شه)."""
@@ -3018,6 +3080,7 @@ def evolve_ctx():
             "standby": [_cfg_row(c) for c in POOL.get("standby", [])[:30] if isinstance(c, dict)],
             "standby_n": len(POOL.get("standby", [])), "backlog_n": len(POOL.get("backlog", []))}
     return {"settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct")},
+            "resource": _res_snapshot(),
             "speed_now": SPEED[0], "speed_effective": sp, "speed_table": SPEEDS, "profile_now": CUR[0],
             "flags": {"tgonly": TGONLY[0], "call": CALL[0], "vpn": VPN[0], "vpn_want": VPN_WANT[0], "background": BG[0], "android": bool(ANDROID),
                       "xray_running": bool(XRAY_PROC), "pipeline_alive": bool(PIPE and PIPE.is_alive()), "ports": {"socks": SOCKS, "http": HTTP}},
@@ -3041,6 +3104,8 @@ def evolve_post(p, j):
             data = base64.b64decode(str(j.get("b64", "")), validate=True)
             if p.endswith("inspect"):
                 return _ev.inspect_patch(data)
+            if ANDROID:  # کد برنامه داخل APK فقط‌خوانده؛ توی گوشی فقط «گزارش» کار می‌کنه و وصله با آپلود فایل‌ها توی گیت‌هاب و ساخت APK تازه نصب می‌شه
+                return {"ok": False, "errors": ["توی نسخه‌ی موبایل نصب وصله ممکن نیست؛ فایل‌های جدید رو توی گیت‌هاب آپلود کن و APK تازه بساز."]}
             if S["stage"] == "running":
                 return {"ok": False, "errors": ["الان جستجو در حاله؛ بعد از پایانش نصب کن."]}
             if load_settings().get("evolve_ok") is not True:  # پیش‌فرض خاموشه: نصب وصله = اجرای کد تازه؛ فقط وقتی خودت روشنش کنی

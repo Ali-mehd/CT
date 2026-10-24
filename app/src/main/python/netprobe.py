@@ -455,3 +455,47 @@ def clock_msg_fa(net):
     amt = f"{m:.0f} دقیقه" if m < 120 else f"{m / 60:.1f} ساعت" if m < 2880 else f"{m / 1440:.0f} روز"
     return (f"ساعت دستگاهت حدود {amt} {d} از زمان واقعیه. با ساعت غلط، اتصال امن (TLS، Reality، VMess) خراب می‌شه و شبیه فیلتر یا سرور خراب دیده می‌شه؛ "
             "فعلاً هیچ سروری به‌خاطرش بد حساب نمی‌شه. «تنظیم خودکار تاریخ و ساعت» رو روشن کن (ویندوز: Settings ← Time & language؛ اندروید: Date & time ← Automatic).")
+
+
+def net_kind():
+    """نوع/اثرانگشت «خود اتصال» (نه اپراتور): مودم/وای‌فای خونه، نت همراه، یا هات‌اسپات. هیچ ترافیکی نمی‌فرسته و اگه نشه تشخیص داد خالی برمی‌گردونه.
+    ASN تنها کافی نیست: مودم و سیم‌کارت از یک اپراتور هم ممکنه باشن. پس نوع اتصال هم توی شناسه‌ی شبکه می‌ره."""
+    kind = ""
+    if os.environ.get("CFG_ANDROID") == "1":  # اندروید: از خود سیستم می‌پرسیم نت همراهه یا وای‌فای
+        try:
+            from java import jclass
+            from com.chaquo.python import Python
+            ctx = Python.getPlatform().getApplication()
+            cm = ctx.getSystemService("connectivity")
+            caps = cm.getNetworkCapabilities(cm.getActiveNetwork())
+            if caps is not None:
+                if caps.hasTransport(0):
+                    kind = "mob"
+                elif caps.hasTransport(1):
+                    kind = "wifi"
+                elif caps.hasTransport(3):
+                    kind = "eth"
+        except Exception:
+            kind = ""
+    ip = ""
+    try:  # آدرس محلی؛ بدون ارسال بسته (UDP connect فقط مسیر رو انتخاب می‌کنه)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1)
+        s.connect(("203.0.113.1", 9))
+        ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        ip = ""
+    lan = ""
+    if ip and not ip.startswith(("127.", "0.")):
+        o = ip.split(".")
+        if len(o) == 4:
+            if ip.startswith("192.168.") or ip.startswith("172.20.10."):
+                lan = ".".join(o[:3])      # مودم/هات‌اسپات: زیرشبکه‌ی ثابت
+            elif kind != "mob":
+                lan = ".".join(o[:2])      # شبکه‌ی 10.x یا 172.16-31 (مودم/سازمان)
+            if not kind and (ip.startswith("100.") or ip.startswith("192.0.0.")):
+                kind = "mob"               # CGNAT / CLAT معمولاً نت همراهه
+    if kind == "mob":
+        return "mob"                       # آدرس محلی نت همراه هر بار عوض می‌شه؛ توی شناسه نمیاد
+    return (kind + ":" + lan) if (kind or lan) else ""
