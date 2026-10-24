@@ -222,10 +222,17 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             try {
                 if (uninstall) {
+                    // از اندروید ۹ به بعد، بدون مجوز REQUEST_DELETE_PACKAGES صفحه‌ی حذف بی‌صدا بسته می‌شد (برای همین فقط داده پاک می‌شد). حالا مجوز هست.
+                    Uri pkg = Uri.parse("package:" + getPackageName());
                     try {
-                        startActivity(new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + getPackageName())));
+                        Intent d = new Intent(Intent.ACTION_DELETE, pkg);
+                        d.putExtra(Intent.EXTRA_RETURN_RESULT, false);
+                        startActivity(d);
                     } catch (Exception e) {
-                        startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+                        try {
+                            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg));  // پشتیبان: از صفحه‌ی مشخصات برنامه دکمه‌ی «حذف نصب» رو بزن
+                        } catch (Exception ignored) {
+                        }
                     }
                 }
                 finishAndRemoveTask();

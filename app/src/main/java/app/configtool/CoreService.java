@@ -132,7 +132,7 @@ public class CoreService extends VpnService {
             MainActivity a = MainActivity.current;
             if (a != null) a.afterQuit(uninstall);
             try {
-                Thread.sleep(uninstall ? 900 : 300);
+                Thread.sleep(uninstall ? 2500 : 300);  // وقت بده صفحه‌ی حذف اندروید کامل باز بشه، بعد پروسه بسته بشه
             } catch (InterruptedException ignored) {
             }
             stopSelf();
