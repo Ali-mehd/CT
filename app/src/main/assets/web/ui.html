@@ -30,7 +30,7 @@ details{background:var(--card);border-radius:14px;padding:6px 14px;margin-bottom
 .sw span:before{content:"";position:absolute;width:15px;height:15px;right:3px;top:3px;background:#cfd6e0;border-radius:50%;transition:.2s}.sw input:checked+span{background:var(--ac)}.sw input:checked+span:before{transform:translateX(-17px)}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.seg label{padding:2px 11px;cursor:pointer;font-size:13px}.seg input{display:none}.seg input:checked+span{color:var(--ac);font-weight:600}
 .tabs{display:flex;gap:4px;overflow-x:auto;margin-bottom:8px}.tab{border:0;background:transparent;color:var(--mut);padding:5px 10px;border-radius:9px;cursor:pointer;font:inherit;font-size:13px;white-space:nowrap}.tab.s{background:#ffffff10;color:var(--tx)}
-.pane{display:none}.pane.s{display:block}
+.pane{display:none}.pane.s{display:block}.auto{display:none!important}.sec{background:#ffffff08;border-radius:12px;padding:2px 12px;margin:8px 0}.sec>summary{padding:9px 0}.sec.dev{outline:1px dashed #ffffff33}
 .kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:13px;border-top:1px solid var(--line)}.kv:first-child{border-top:0}.kv span:first-child{color:var(--mut)}.kv span:last-child{direction:ltr;text-align:left}
 h4{margin:8px 0 2px;font-size:12.5px;color:var(--mut)}
 textarea{width:100%;height:76px;background:#101419;border:1px solid var(--line);border-radius:10px;color:var(--tx);padding:8px;direction:ltr;font:12px monospace;resize:vertical}
@@ -84,66 +84,66 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
  <div class="grid"><div><small>IP خروجی</small><b id="r-ip"></b></div><div><small>پاسخ‌دهی</small><b id="r-ms"></b></div><div><small>جایگزین</small><b id="r-n"></b></div><div><small>نشت IP</small><b id="r-leak"></b></div></div>
 </div>
 
-<div class="card">
- <div class="modes" id="modes"></div>
- <div class="m" id="mdesc"></div>
-</div>
-
 <div class="card" id="callcard">
  <div class="row"><span>حالت تماس (واتساپ و تلگرام) <button class="i" data-t="h-call">ⓘ</button></span><label class="sw"><input type="checkbox" id="callon"><span></span></label></div>
  <p class="hint" id="h-call" hidden>فقط برای تماس صوتی/تصویری: با روشن‌کردنش خودش دنبال سرور مناسب تماس می‌گرده (لازم نیست کاری بکنی؛ اگه همین الان خوب نبود، چند سرور آماده رو می‌سنجه و به بهتر می‌پره، و هر چند دقیقه دوباره می‌گرده). سرور رو بر اساس کیفیت واقعیِ UDP از داخل تونل (تأخیر، نوسان، افت بسته) می‌سنجه، وسط کار سرور رو عوض نمی‌کنه مگر قطعِ کامل، کارهای پس‌زمینه (تست سایت‌ها، اسکن، دانلود منبع) رو متوقف می‌کنه تا اینترنتِ تماس رو اذیت نکنه، و کانفیگ رو بدون balancer و mux می‌سازه. عدد MOS یک برآورد تقریبیه، نه ضمانت.</p>
  <div id="callbox" style="display:none">
+ <div class="m" id="callph" style="margin:2px 0 6px"></div>
   <div class="chips" id="callq"></div>
   <div class="m" id="calltips" style="margin-top:6px"></div>
+  <details class="sec"><summary>جزئیات و اتصال به تلگرام</summary><div>
   <div style="margin-top:8px"><button class="btn" id="calltest">تست آمادگی تماس</button><button class="btn" id="callbest">بهترین سرور برای تماس</button></div>
   <div class="m" id="callsocks" style="margin-top:8px"></div>
   <div style="margin-top:4px"><a class="btn" id="calltg" href="#" style="display:inline-block;text-decoration:none">افزودن به تلگرام (SOCKS5)</a></div>
   <p class="hint" style="margin-top:8px">تلگرام: بعد از افزودن، توی Settings ← Data and Storage ← Proxy گزینه‌ی «Use proxy for calls» رو روشن کن. پراکسی MTProto تماس رو پشتیبانی نمی‌کنه؛ فقط SOCKS5.</p>
   <p class="hint" id="callwa"></p>
+  </div></details>
  </div>
 </div>
 
 
 </div><div class="c2">
-<details id="setd"><summary>تنظیمات</summary>
+<div class="card">
+ <div class="tabs" id="tabs"></div>
+ <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و هر سه سایت (یوتیوب، اینستاگرام و تلگرام) رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که این شرط رو نداشته باشن اینجا نگه داشته نمی‌شن (در «حالت اضطراری» شرط فقط باز شدن تلگرامه). پینگ و سرعت مال آخرین تسته.</p></div>
+<div class="pane" data-p="adv">
+<details class="sec" id="setd"><summary>تنظیمات اتصال</summary>
+<p class="hint" id="callmgd" hidden></p>
+<div class="modes" id="modes"></div><div class="m" id="mdesc"></div>
  <div class="row"><span>جابه‌جایی سرور <button class="i" data-t="h-fo">ⓘ</button></span>
   <span class="seg"><label><input type="radio" name="mode" value="stable" checked><span>هوشمند</span></label><label><input type="radio" name="mode" value="fast"><span>کم‌پینگ</span></label><label><input type="radio" name="mode" value="off"><span>ثابت</span></label></span></div>
  <p class="hint" id="h-fo" hidden><b>هوشمند:</b> تا وقتی سرور فعلی سالمه عوضش نمی‌کنه (حتی اگه دیگری لحظه‌ای پینگ کمتر داشته باشه). فقط وقتی واقعاً قطع یا ضعیف بشه می‌ره سراغ سروری که با چند تست پشت‌سرهم کاملاً سالم بوده؛ سرور خراب تا ۱۰ دقیقه برنمی‌گرده. هر چند دقیقه اگه فعلی خیلی کند باشه و جایگزین پایدارِ واضحاً بهتری باشه، با امکان بازگشت ارتقا می‌ده.<br><b>کم‌پینگ:</b> چند سرور هم‌زمان و هر چند ثانیه کم‌پینگ‌ترین؛ ممکنه مدام جابه‌جا بشه.<br><b>ثابت:</b> یک سرور، بدون جابه‌جایی.</p>
  <div class="row"><span>حالت اضطراری: فقط تلگرام <button class="i" data-t="h-tg">ⓘ</button></span><label class="sw"><input type="checkbox" id="tgonly"><span></span></label></div>
  <p class="hint" id="h-tg" hidden>حالت عادی فقط به سروری وصل می‌شه که یوتیوب، اینستاگرام و تلگرام هر سه رو باز کنه. این گزینه برای وقتیه که فیلتر خیلی شدیده و فقط تلگرام لازمه: به سروری وصل می‌شه که تلگرام رو باز می‌کنه، حتی اگه یوتیوب و اینستاگرام باز نشن. از اتصال بعدی اعمال می‌شه.</p>
- <div class="row"><span>جستجوی خودکار منبع تازه <button class="i" data-t="h-as">ⓘ</button></span><label class="sw"><input type="checkbox" id="autosrc" checked><span></span></label></div>
- <p class="hint" id="h-as" hidden>بعد از اتصال، برنامه از داخل تونل توی گیت‌هاب دنبال ریپوهای تازه‌ای می‌گرده که لیست کانفیگ دارن. هر فایل جدا دانلود می‌شه و فقط اگه حداقل ۳۰ کانفیگ قابل‌خوندن داشته باشه به‌عنوان منبع خودکار اضافه می‌شه (حداکثر ۲۵ تا). منبعی که کلی سرور ازش تست بشه ولی هیچ سرور مفیدی نده خودش غیرفعال می‌شه. منبع‌های خودت هیچ‌وقت خودکار حذف یا غیرفعال نمی‌شن.</p>
- <div class="row" id="sysrow" style="display:none"><span><span id="syslbl">پروکسی خودکار ویندوز</span> <button class="i" data-t="h-sys">ⓘ</button></span><label class="sw"><input type="checkbox" id="sysp" checked><span></span></label></div>
- <p class="hint" id="h-sys" hidden>مرورگر و بیشتر برنامه‌ها خودکار از اتصال استفاده می‌کنن و با قطع اتصال یا بستن برنامه به حالت قبل برمی‌گردن. اگه خاموش باشه باید پروکسی رو دستی روی آدرسی که بعد از اتصال نوشته می‌شه بذاری.</p>
+ <div class="row auto"><span>جستجوی خودکار منبع تازه <button class="i" data-t="h-as">ⓘ</button></span><label class="sw"><input type="checkbox" id="autosrc" checked><span></span></label></div>
+ <p class="hint auto" id="h-as" hidden>بعد از اتصال، برنامه از داخل تونل توی گیت‌هاب دنبال ریپوهای تازه‌ای می‌گرده که لیست کانفیگ دارن. هر فایل جدا دانلود می‌شه و فقط اگه حداقل ۳۰ کانفیگ قابل‌خوندن داشته باشه به‌عنوان منبع خودکار اضافه می‌شه (حداکثر ۲۵ تا). منبعی که کلی سرور ازش تست بشه ولی هیچ سرور مفیدی نده خودش غیرفعال می‌شه. منبع‌های خودت هیچ‌وقت خودکار حذف یا غیرفعال نمی‌شن.</p>
+ <div class="row auto" id="sysrow"><span><span id="syslbl">پروکسی خودکار ویندوز</span> <button class="i" data-t="h-sys">ⓘ</button></span><label class="sw"><input type="checkbox" id="sysp" checked><span></span></label></div>
+ <p class="hint auto" id="h-sys" hidden>مرورگر و بیشتر برنامه‌ها خودکار از اتصال استفاده می‌کنن و با قطع اتصال یا بستن برنامه به حالت قبل برمی‌گردن. اگه خاموش باشه باید پروکسی رو دستی روی آدرسی که بعد از اتصال نوشته می‌شه بذاری.</p>
  <div class="row"><span>سایت‌های داخلی مستقیم <button class="i" data-t="h-dir">ⓘ</button></span>
   <select id="dir" style="background:#12151a;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 8px;font:inherit;font-size:13px"><option value="">هیچ</option><option value="ir">ایران</option><option value="az">آذربایجان</option><option value="tr">ترکیه</option><option value="ru">روسیه</option><option value="cn">چین</option></select></div>
  <p class="hint" id="h-dir" hidden>سایت‌ها و IPهای کشور انتخابی بدون پروکسی و مستقیم باز می‌شن؛ سریع‌تر، و ترافیک غیرعادی کمتری از پروکسی می‌ره (مثلاً بانک‌ها). تبلیغ‌ها و ردیاب‌ها همیشه مسدود می‌شن.</p>
- <div class="row"><span>جستجو <button class="i" data-t="h-q">ⓘ</button></span><span class="seg"><label><input type="radio" name="q" value="1" checked><span>سریع</span></label><label><input type="radio" name="q" value="0"><span>کامل</span></label></span></div>
- <p class="hint" id="h-q" hidden>کانفیگ‌ها از شبکه‌ی خودت تست می‌شن و به محض پیدا شدن اولین سرور سالم وصل می‌شی. «سریع» تا حدود ۱٫۵ دقیقه و «کامل» تا حدود ۴ دقیقه (اگه چیزی پیدا نشه تا ۱۵ دقیقه) دنبال سرورهای بیشتر می‌گرده.</p>
+ <div class="row auto"><span>جستجو <button class="i" data-t="h-q">ⓘ</button></span><span class="seg"><label><input type="radio" name="q" value="1" checked><span>سریع</span></label><label><input type="radio" name="q" value="0"><span>کامل</span></label></span></div>
+ <p class="hint auto" id="h-q" hidden>کانفیگ‌ها از شبکه‌ی خودت تست می‌شن و به محض پیدا شدن اولین سرور سالم وصل می‌شی. «سریع» تا حدود ۱٫۵ دقیقه و «کامل» تا حدود ۴ دقیقه (اگه چیزی پیدا نشه تا ۱۵ دقیقه) دنبال سرورهای بیشتر می‌گرده.</p>
  <div class="row"><span>سرعت اسکن <button class="i" data-t="h-sp">ⓘ</button></span><span class="seg"><label><input type="radio" name="sp" value="gentle"><span>آرام</span></label><label><input type="radio" name="sp" value="normal" checked><span>متعادل</span></label><label><input type="radio" name="sp" value="fast"><span>سریع</span></label><label><input type="radio" name="sp" value="turbo"><span>خیلی سریع</span></label></span></div>
  <p class="hint" id="h-sp" hidden>سرعت تست کانفیگ‌ها. «آرام» کمترین فشار روی شبکه و باتری را دارد (حدود ۶ تست در ثانیه) و شبیه اسکن پورت دیده نمی‌شود. «متعادل» حدود ۱۵، «سریع» حدود ۳۰ و «خیلی سریع» حدود ۶۰ تست در ثانیه. هرچه سریع‌تر، تست زودتر تمام می‌شود ولی گوشی داغ‌تر و باتری سریع‌تر خالی می‌شود، و ممکن است اپراتور اینترنت ترافیک را مشکوک ببیند و محدود کند. </p>
 </details>
-
-<div class="card">
- <div class="tabs" id="tabs"></div>
- <div class="pane" data-p="srv"><p class="m" id="sw" style="margin-top:0"></p><div id="servers"></div><p class="m">«فعال» الان استفاده می‌شه. «آماده» جایگزین‌هاییه که تست شدن و هر سه سایت (یوتیوب، اینستاگرام و تلگرام) رو باز می‌کنن؛ اگه سرور فعال قطع یا ضعیف شد، برنامه خودش فوری به یکی از اینا می‌پره. سرورهایی که این شرط رو نداشته باشن اینجا نگه داشته نمی‌شن (در «حالت اضطراری» شرط فقط باز شدن تلگرامه). پینگ و سرعت مال آخرین تسته.</p></div>
- <div class="pane" data-p="an"><div id="learnbox" class="m" style="margin-top:0;padding-bottom:12px;border-bottom:1px solid var(--line)"><b style="color:var(--fg)">یادگیری محلی</b>
-   <div id="learntxt" style="margin-top:4px"></div><div class="chips" id="learnbest" style="justify-content:flex-start"></div>
-   <p class="m" style="margin:6px 0 0">فقط روی همین دستگاه و بدون اینترنت ذخیره می‌شه و با بستن برنامه پاک نمی‌شه. آدرس سرورها ذخیره نمی‌شه؛ فقط شمارنده‌ی ویژگی‌ها (پروتکل، ترنسپورت، پورت، ساعت، منبع) و هش سرورهای قرنطینه. برنامه هم از موفقیت‌ها یاد می‌گیره (امیدوارکننده‌ها اول تست می‌شن) و هم از شکست‌ها و موارد خطرناک (سرور خراب یا خطرناک مدتی کنار می‌ره و الگوهای پرخطر امتیاز منفی می‌گیرن).</p>
-   <button class="btn" id="learnreset" style="margin:6px 0 0">پاک کردن یادگیری</button></div>
-  <div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
-  <p class="m">«کارکرده» یعنی ترافیک واقعی ازش رد شد و مشکل امنیتی دیده نشد. سرورهای فهرست سیاه اصلاً تست نمی‌شن.</p>
-  <a class="btn" id="dl" download style="text-decoration:none;display:inline-block">ذخیره‌ی فایل گزارش</a><a class="btn" id="vw" target="_blank" style="text-decoration:none;display:inline-block">مشاهده‌ی گزارش</a>
-  <p class="m">گزارش کامل (همه‌ی اجراها، به تفکیک پروتکل، ترنسپورت، امنیت و پورت، و دلیل شکست‌ها) بدون هیچ آدرس سرور یا رمزی ساخته می‌شه و می‌تونی نگهش داری.</p></div>
- <div class="pane" data-p="add"><p class="m" style="margin-top:0"><b>کانال یا گروه به‌عنوان منبع:</b> لینک یک کانال یا گروه عمومی (تلگرام، روبیکا، سروش) رو بذار؛ برنامه آخرین پیام‌هاش رو می‌خونه و کانفیگ‌هاش رو هر بار که اسکن می‌کنی تست می‌کنه. کانال یا گروه خصوصی (که باید عضوش باشی) خونده نمی‌شه؛ پیام‌هاش رو کپی کن و توی کادر پایین paste کن. فقط تلگرام رو مطمئنم؛ روبیکا و سروش ممکنه صفحه‌ی عمومی نداشته باشن.</p>
+ <details class="sec" id="sec-add"><summary>افزودن منبع یا کانفیگ</summary><div><p class="m" style="margin-top:0"><b>کانال یا گروه به‌عنوان منبع:</b> لینک یک کانال یا گروه عمومی (تلگرام، روبیکا، سروش) رو بذار؛ برنامه آخرین پیام‌هاش رو می‌خونه و کانفیگ‌هاش رو هر بار که اسکن می‌کنی تست می‌کنه. کانال یا گروه خصوصی (که باید عضوش باشی) خونده نمی‌شه؛ پیام‌هاش رو کپی کن و توی کادر پایین paste کن. فقط تلگرام رو مطمئنم؛ روبیکا و سروش ممکنه صفحه‌ی عمومی نداشته باشن.</p>
 <input id="chn" placeholder="https://t.me/نام_کانال  یا  @نام_کانال" style="width:100%;direction:ltr;background:#101419;border:1px solid var(--line);border-radius:10px;color:var(--tx);padding:8px;font:12px monospace">
 <button class="btn" id="chb">افزودن کانال</button><span class="m" id="chm"></span><div id="chl"></div>
 <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><p class="m" style="margin-top:0">کانفیگ یا لینک ساب‌اسکریپشن رو از دوستات یا کانال‌ها اینجا paste کن؛ همین‌ها هم تست می‌شن و برای بدون‌اینترنت‌آزاد بودن ذخیره می‌مونن.</p>
   <textarea id="imp" placeholder="vless://  vmess://  trojan://  ss://"></textarea>
 <button class="btn" id="impb">افزودن</button><span class="m" id="impm"></span>
   <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><p class="m" style="margin-top:0"><b>منبع‌های خودکار (از گیت‌هاب):</b> <span id="discmsg"></span></p>
-  <button class="btn" id="discb" style="margin:0 0 8px">جستجوی منبع تازه همین الان</button><div id="autol"></div></div>
- <div class="pane" data-p="diag"><p class="m" style="margin-top:0"><b style="color:var(--fg)">وضعیت شبکه و تشخیص</b><br>آنچه برنامه از شبکه‌ی فعلی اندازه گرفته و اینکه چرا وصل شده یا نشده. هیچ آدرس سرور یا رمزی توش نیست.</p>
+  <button class="btn" id="discb" style="margin:0 0 8px">جستجوی منبع تازه همین الان</button><div id="autol"></div></div></details>
+ <details class="sec" id="sec-an"><summary>یادگیری و آمار</summary><div><div id="learnbox" class="m" style="margin-top:0;padding-bottom:12px;border-bottom:1px solid var(--line)"><b style="color:var(--fg)">یادگیری محلی</b>
+   <div id="learntxt" style="margin-top:4px"></div><div class="chips" id="learnbest" style="justify-content:flex-start"></div>
+   <p class="m" style="margin:6px 0 0">فقط روی همین دستگاه و بدون اینترنت ذخیره می‌شه و با بستن برنامه پاک نمی‌شه. آدرس سرورها ذخیره نمی‌شه؛ فقط شمارنده‌ی ویژگی‌ها (پروتکل، ترنسپورت، پورت، ساعت، منبع) و هش سرورهای قرنطینه. برنامه هم از موفقیت‌ها یاد می‌گیره (امیدوارکننده‌ها اول تست می‌شن) و هم از شکست‌ها و موارد خطرناک (سرور خراب یا خطرناک مدتی کنار می‌ره و الگوهای پرخطر امتیاز منفی می‌گیرن).</p>
+   <button class="btn" id="learnreset" style="margin:6px 0 0">پاک کردن یادگیری</button></div>
+  <div id="rsum" class="m" style="margin-top:0">هنوز اسکنی انجام نشده.</div><div id="methods"></div>
+  <p class="m">«کارکرده» یعنی ترافیک واقعی ازش رد شد و مشکل امنیتی دیده نشد. سرورهای فهرست سیاه اصلاً تست نمی‌شن.</p>
+  <a class="btn" id="dl" download style="text-decoration:none;display:inline-block">ذخیره‌ی فایل گزارش</a><a class="btn" id="vw" target="_blank" style="text-decoration:none;display:inline-block">مشاهده‌ی گزارش</a>
+  <p class="m">گزارش کامل (همه‌ی اجراها، به تفکیک پروتکل، ترنسپورت، امنیت و پورت، و دلیل شکست‌ها) بدون هیچ آدرس سرور یا رمزی ساخته می‌شه و می‌تونی نگهش داری.</p></div></details>
+ <details class="sec" id="sec-diag"><summary>وضعیت شبکه و تشخیص</summary><div><p class="m" style="margin-top:0"><b style="color:var(--fg)">وضعیت شبکه و تشخیص</b><br>آنچه برنامه از شبکه‌ی فعلی اندازه گرفته و اینکه چرا وصل شده یا نشده. هیچ آدرس سرور یا رمزی توش نیست.</p>
 <div class="m" id="dnetid"></div>
 <div class="chips" id="dnet"></div>
 <div class="chips" id="dlink" style="margin-top:6px"></div>
@@ -152,8 +152,10 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
 <pre id="dlog" style="direction:ltr;text-align:left;white-space:pre-wrap;max-height:200px;overflow:auto;font-size:11.5px;background:#12151a;border:1px solid var(--line);border-radius:8px;padding:8px;margin:8px 0"></pre>
 <button class="btn" id="dcopy" style="margin-right:0">کپی گزارش تشخیص</button>
 <div class="row" style="margin-top:12px"><span>سنجش شبکه <button class="i" data-t="h-np">ⓘ</button></span><label class="sw"><input type="checkbox" id="npon" checked><span></span></label></div>
-<p class="hint" id="h-np" hidden>برای فهمیدن اینکه کدوم پورت، UDP یا فیلتر روی شبکه‌ی تو بازه، برنامه چند اتصال کوچک (TCP، TLS، UDP) به IPهای ثابتِ کلودفلر، گوگل و Quad9 می‌زنه و برای تشخیص اپراتور (ASN) یک پرسش DNS به OpenDNS و Team Cymru می‌فرسته. چیزی از کانفیگ‌ها یا رمزهات نمی‌ره، ولی اون سرویس‌ها IP عمومی تو رو می‌بینن. خاموش‌کردنش فقط سنجش رو حذف می‌کنه و برنامه مثل قبل کار می‌کنه (فقط ترتیب تست‌ها هوشمندانه نمی‌شه).</p></div>
-<div class="pane" data-p="evo"><p class="m" style="margin-top:0"><b style="color:var(--fg)">تکامل برنامه</b><br>برنامه می‌تونه خودش رو بهتر کنه، ولی فقط توی یه محدوده‌ی امن: هر تغییر اول روی یه کپی جدا با همه‌ی تست‌ها امتحان می‌شه، فقط اگه سالم بود نصب می‌شه، و همیشه می‌تونی برگردی.</p>
+<p class="hint" id="h-np" hidden>برای فهمیدن اینکه کدوم پورت، UDP یا فیلتر روی شبکه‌ی تو بازه، برنامه چند اتصال کوچک (TCP، TLS، UDP) به IPهای ثابتِ کلودفلر، گوگل و Quad9 می‌زنه و برای تشخیص اپراتور (ASN) یک پرسش DNS به OpenDNS و Team Cymru می‌فرسته. چیزی از کانفیگ‌ها یا رمزهات نمی‌ره، ولی اون سرویس‌ها IP عمومی تو رو می‌بینن. خاموش‌کردنش فقط سنجش رو حذف می‌کنه و برنامه مثل قبل کار می‌کنه (فقط ترتیب تست‌ها هوشمندانه نمی‌شه).</p></div></details>
+ <details class="sec" id="sec-more"><summary>نگهداری و ظاهر</summary><div><p class="m" style="margin-top:0">«پاک کردن» نتایج و کانفیگ‌های ذخیره‌شده/دستی رو حذف می‌کنه. «حذف کامل» کل برنامه و دیتاش رو پاک می‌کنه.</p>
+  <p class="m" id="ports"></p><button class="btn" id="batt" style="display:none">اجازه‌ی کار بدون محدودیت باتری</button><button class="btn" id="hide">بستن پنجره و ادامه در پس‌زمینه</button><button class="btn" id="quit">خروج کامل</button><button class="btn" id="look">تنظیم ظاهر (اندازه‌ی نوشته و کنتراست)</button><button class="btn" id="clean">پاک کردن داده‌ها</button><button class="btn x" id="unin">حذف کامل برنامه</button></div></details>
+<!--EVO--><details class="sec dev" id="sec-evo" hidden><summary>تکامل برنامه (مخصوص سازنده)</summary><div><p class="m" style="margin-top:0"><b style="color:var(--fg)">تکامل برنامه</b><br>برنامه می‌تونه خودش رو بهتر کنه، ولی فقط توی یه محدوده‌ی امن: هر تغییر اول روی یه کپی جدا با همه‌ی تست‌ها امتحان می‌شه، فقط اگه سالم بود نصب می‌شه، و همیشه می‌تونی برگردی.</p>
  <p class="m"><b>۱) گزارش:</b> این دکمه یه فایل آمار کلی می‌سازه (بدون آدرس سرور و رمز). فایل رو توی چت Claude بفرست.</p>
  <a class="btn" id="evrep" download style="text-decoration:none;display:inline-block;margin-right:0">گزارش کامل (فشرده)</a><a class="btn" id="evrept" download style="text-decoration:none;display:inline-block">گزارش کامل (متنی)</a><p class="hint">اگه چت Claude نتونست فایل فشرده رو بخونه، «متنی» رو بفرست؛ همون اطلاعاته ولی حجمش بیشتره.</p>
  <p class="m"><b>۲) وصله:</b> فایلی که Claude بهت می‌ده (پسوند ctpatch) رو اینجا انتخاب کن.</p>
@@ -172,14 +174,13 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
  <p class="hint" id="evtune"></p>
  <div class="m" id="evlist"></div>
  <button class="btn" id="evback" style="margin-right:0">برگشت به نسخه‌ی قبل</button><button class="btn x" id="evorig">برگشت کامل به حالت اولیه</button>
+</div></details><!--/EVO-->
 </div>
  <div class="pane" data-p="help"><ol class="m" style="margin-top:0"><li><b>متعادل:</b> بهترین ترکیب تأخیر و ثبات.</li><li><b>سرعت:</b> سرعت دانلود واقعی هر سرور (از داخل تونل) اندازه‌گیری می‌شه و سریع‌ترین انتخاب می‌شه.</li><li><b>پایداری:</b> فقط سروری که ۵ تست پشت‌سرهم بدون حتی یک خطا داشته؛ کم‌نوسان‌ترین اول.</li><li><b>امنیت بیشتر:</b> فقط Reality/TLS، بدون هیچ هشدار تنظیماتی، Reality اول؛ کمی گزینه‌ی کمتر.</li><li>ترفندهای کمکی (fragment، mux) فقط وقتی کانفیگ ساده وصل نشد خودکار امتحان می‌شن.</li><li>صاحب سرور رایگان مقصدها رو می‌بینه؛ وارد بانک و ایمیل اصلی نشو.</li><li id="h-bg">وقتی پنجره رو می‌بندی، می‌پرسه اتصال در پس‌زمینه ادامه داشته باشه یا همه‌چیز کامل بسته بشه.</li></ol></div>
- <div class="pane" data-p="more"><p class="m" style="margin-top:0">«پاک کردن» نتایج و کانفیگ‌های ذخیره‌شده/دستی رو حذف می‌کنه. «حذف کامل» کل برنامه و دیتاش رو پاک می‌کنه.</p>
-  <p class="m" id="ports"></p><button class="btn" id="batt" style="display:none">اجازه‌ی کار بدون محدودیت باتری</button><button class="btn" id="hide">بستن پنجره و ادامه در پس‌زمینه</button><button class="btn" id="quit">خروج کامل</button><button class="btn" id="look">تنظیم ظاهر (اندازه‌ی نوشته و کنتراست)</button><button class="btn" id="clean">پاک کردن داده‌ها</button><button class="btn x" id="unin">حذف کامل برنامه</button></div>
 </div>
 </div></div></div>
 <div id="ob" hidden><div class="obc"><h2>اول، ظاهر برنامه رو برای چشم خودت تنظیم کن</h2>
-<p class="m">هر اندازه‌ای که نوشته‌ی پایین رو راحت می‌خونی انتخاب کن. بعداً از «بیشتر ← تنظیم ظاهر» عوضش می‌کنی.</p>
+<p class="m">هر اندازه‌ای که نوشته‌ی پایین رو راحت می‌خونی انتخاب کن. بعداً از «پیشرفته ← نگهداری و ظاهر» عوضش می‌کنی.</p>
 <div class="obs" id="obp">این یک نمونه متن است؛ ۱۲۳ — اتصال، یوتیوب، تلگرام. اگر این را بدون زور زدن می‌خوانی، اندازه مناسب است.</div>
 <div class="obz" id="obz"></div>
 <label><input type="checkbox" id="obhc"> نوشته‌ها پررنگ‌تر و کنتراست بالا (برای دید ضعیف‌تر)</label>
@@ -191,7 +192,7 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
 const T="__T__";
 const M={balanced:["متعادل","تأخیر + ثبات"],speed:["سرعت","سریع‌ترین دانلود"],stable:["پایداری","بدون حتی یک خطا"],secure:["امنیت","فقط رمزنگاری سخت‌گیرانه"]};
 const MD={balanced:"بهترین ترکیب تأخیر و ثبات؛ مناسب بیشتر کارها.",speed:"سرعت دانلود هر سرور از داخل تونل اندازه‌گرفته می‌شه و سریع‌ترین انتخاب می‌شه.",stable:"فقط سروری که ۵ تست پشت‌سرهم بی‌خطا داشته؛ کم‌نوسان‌ترین اول.",secure:"فقط Reality/TLS بدون هشدار تنظیماتی؛ گزینه‌ها کمترن ولی امن‌ترن."};
-const TB=[["srv","سرورها"],["an","روش‌ها"],["add","افزودن دستی"],["diag","تشخیص"],["evo","تکامل"],["help","راهنما"],["more","بیشتر"]];
+const TB=[["srv","سرورها"],["adv","پیشرفته"],["help","راهنما"]];
 let prof="balanced",tab="srv",S={},last={},cancelling=0,loaded=false;
 const $=i=>document.getElementById(i);
 const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-T":T,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
@@ -225,7 +226,7 @@ function applySettings(x){if(!x)return;if(x.profile&&M[x.profile])prof=x.profile
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
  if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;$("autosrc").checked=x.autosrc!==false;$("npon").checked=x.netprobe!==false;$("evok").checked=x.evolve_ok===true;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
 function render(s){S=s;const st=s.stage,c=s.connected;
- if(!loaded){loaded=true;applySettings(s.settings);applyLook(s.settings);if(!(s.settings&&s.settings.onboarded))showOb(s)}
+ if(!loaded){loaded=true;applySettings(s.settings);applyLook(s.settings);if(!(s.settings&&s.settings.onboarded))showOb(s);if(!(s.settings&&s.settings.ui2)){$("autosrc").checked=true;$("sysp").checked=true;const q1=document.querySelector('input[name=q][value="1"]');if(q1)q1.checked=true;api("/api/settings",{autosrc:true,sysproxy:true,quick:true,ui2:true})}}
  if(!$("ob").hidden)obSensors(s);
  $("dot").className="dot "+(st=="connected"?"on":st=="error"?"err":st=="running"?"run":"");
  const g=$("go");g.className=st=="connected"?"on":st=="running"?"run":"";if(st!="running")cancelling=0;g.disabled=cancelling>0;
@@ -255,7 +256,12 @@ function render(s){S=s;const st=s.stage,c=s.connected;
   $("ddiag").textContent="تست‌شده "+(d.tested||0)+": کارکرده "+(d.ok||0)+"، جواب نداده "+(d.no_reach||0)+"، جواب داده ولی ترافیک رد نشد "+(d.no_traffic||0)+"، ناامن "+(d.unsafe||0)+(d.skip&&d.skip.quarantine?"، از قرنطینه رد شد "+d.skip.quarantine:"");
   let w="";if(d.tested>=8&&!d.ok){w=d.no_reach>=0.8*d.tested?"بیشترِ سرورها اصلاً جواب ندادن: معمولاً یعنی پورت/IP فیلتره یا اینترنت قطعه.":d.no_traffic>=0.5*d.tested?"سرورها جواب دادن ولی ترافیک واقعی رد نشد: معمولاً فیلتر عمیق (DPI) یا محدودیت.":"هیچ سرور سالمی پیدا نشد؛ منبع‌ها یا شبکه رو بررسی کن."}$("dwhy").textContent=w;
   $("dlog").textContent=(s.log||[]).join("\n")});
- once("call",[s.call,s.stage],()=>{const c=s.call||{},q=c.q,b=$("callq");b.textContent="";$("callon").checked=!!c.on;$("callbox").style.display=c.on?"block":"none";if(!c.on)return;
+ once("call",[s.call,s.stage],()=>{const c=s.call||{},q=c.q,b=$("callq");b.textContent="";$("callon").checked=!!c.on;$("callbox").style.display=c.on?"block":"none";
+  const FP={connecting:"دارم وصل می‌شم و سرور مناسب تماس رو انتخاب می‌کنم …",searching:"دارم بهترین سرور تماس رو می‌گردم …",locked:"سرور مناسب تماس انتخاب شد؛ فقط نظارت آروم انجام می‌شه و وسط تماس سرور عوض نمی‌شه.",waiting:"بهترین سرور موجود همینه؛ چند دقیقه دیگه دوباره می‌گردم (یا دکمه‌ی «بهترین سرور برای تماس» رو بزن).",monitoring:"روی بهترین سرور موجود هستم؛ جایگزین بهتری پیدا نشد و فقط نظارت آروم انجام می‌شه.",no_udp:"UDP روی این شبکه جواب نمی‌ده؛ سرور عوض نمی‌شه.",idle:"وصل نیستم؛ با روشن‌کردن حالت تماس خودش وصل می‌شه."};
+  $("callph").textContent=FP[c.phase]||"";const mg=c.managed,bn=$("callmgd");bn.hidden=!c.on;
+  if(c.on&&mg)bn.textContent="حالت تماس روشنه و این تنظیم‌ها رو خودش مدیریت می‌کنه: جابه‌جایی سرور «"+(mg.mode=="off"?"ثابت":"هوشمند")+"»، سرعت اسکن «"+({gentle:"آرام",normal:"متعادل"}[mg.speed]||mg.speed)+"»، انتخاب سرور بر اساس کیفیت تماس (UDP). انتخاب‌های خودت با خاموش‌شدن حالت تماس دوباره اعمال می‌شن.";
+  document.querySelectorAll('input[name=mode],input[name=sp]').forEach(i=>i.disabled=!!c.on);
+  if(!c.on)return;
   if(!q)b.appendChild(el("span","در حال اندازه‌گیری …","chip"));else{b.appendChild(el("span","کیفیت تماس: "+q.grade_fa,"chip "+(q.grade=="excellent"||q.grade=="good"?"ok":q.grade=="fair"?"":"no")));if(q.udp_ok){b.appendChild(el("span","تأخیر "+Math.round(q.p50)+" ms","chip"));b.appendChild(el("span","نوسان "+Math.round(q.jitter||0)+" ms","chip"));b.appendChild(el("span","افت "+q.loss+"٪","chip"));b.appendChild(el("span","MOS ≈ "+q.mos,"chip"))}}
   $("calltips").textContent=(c.tips||[]).join(" ");$("calltg").href=c.tg||"#";$("callsocks").textContent="SOCKS5: 127.0.0.1:"+String(c.tg||"").split("port=")[1];
   $("callwa").textContent=c.android?"واتساپ: چون اتصال کل گوشی (VPN) فعاله، UDP تماس واتساپ باید از همین تونل بره.":"واتساپ دسکتاپ برای تماس از پراکسی ویندوز استفاده نمی‌کنه؛ تماس واتساپ روی ویندوز با این برنامه تضمین نمی‌شه (فقط اتصال کل سیستم مثل VPN، UDP واتساپ رو می‌بره)."});
@@ -308,7 +314,7 @@ $("batt").onclick=()=>{if(window.AndroidBridge)AndroidBridge.batterySettings()};
 $("hide").onclick=()=>window.goHide?(goHide(),0):window.AndroidBridge?AndroidBridge.moveToBack():api("/api/hide",{}).then(()=>{document.body.textContent="برنامه در پس‌زمینه ادامه می‌ده. برای باز کردن دوباره‌ی پنجره، ConfigTool رو اجرا کن."});
 $("quit").onclick=()=>window.AndroidBridge&&AndroidBridge.quitAll?(AndroidBridge.quitAll(),document.body.textContent="در حال بستن کامل ..."):api("/api/quit",{}).then(()=>{document.body.textContent="بسته شد. می‌تونی این پنجره رو ببندی."});
 $("unin").onclick=()=>{if(window.AndroidBridge&&AndroidBridge.uninstall){if(confirm("همه‌ی داده‌ی برنامه پاک می‌شه و بعد صفحه‌ی حذف اندروید باز می‌شه (تأیید نهایی با خودته). ادامه؟")){AndroidBridge.uninstall();document.body.textContent="در حال پاک‌کردن ..."}return}if(confirm("کل برنامه و دیتاش حذف بشه؟"))api("/api/uninstall",{}).then(()=>{document.body.textContent="حذف شد. می‌تونی این پنجره رو ببندی."})};
-$("setd").open=innerWidth>=900;modes();tabs();$("dl").href="/report?dl=1&t="+T;$("vw").href="/report?t="+T;
+$("setd").open=false;modes();tabs();$("dl").href="/report?dl=1&t="+T;$("vw").href="/report?t="+T;
 const evb64=b=>{let s="",u=new Uint8Array(b);for(let i=0;i<u.length;i+=32768)s+=String.fromCharCode.apply(null,u.subarray(i,i+32768));return btoa(s)};
 let evData=null;
 const evkb=k=>k>=1000?(k/1000).toFixed(1)+" مگابایت":k+" کیلوبایت";
@@ -336,7 +342,11 @@ function evRefresh(){api("/api/evolve").then(x=>{if(!x||!x.usage)return;const u=
  l.append(a.length?"وصله‌های نصب‌شده:":"هنوز وصله‌ای نصب نشده.");a.forEach(v=>l.append(el("div","• "+v.title+(v.ok?" ✓":" (در حال آزمایش اجرا)"))));
  $("evback").style.display=a.length?"inline-block":"none";$("evorig").style.display=a.length?"inline-block":"none";
  const j=x.job||{};if(j.state=="running")$("evjob").textContent=j.msg;else if(j.state=="done"||j.state=="failed")$("evjob").textContent=j.msg||""}).catch(()=>{})}
-setInterval(()=>{if(tab=="evo")evRefresh()},2000);
+setInterval(()=>{const e=$("sec-evo");if(tab=="adv"&&e&&!e.hidden&&e.open)evRefresh()},2000);
+let devT=0;
+function devOn(){const e=$("sec-evo");if(e&&!e.dataset.off)e.hidden=false}
+try{if(localStorage.getItem("dev")=="1")devOn()}catch(e){}
+document.querySelector(".top").onclick=()=>{if(++devT>=5){devT=0;try{localStorage.setItem("dev","1")}catch(e){}devOn();tab="adv";tabs();const e=$("sec-evo");if(e&&!e.hidden){e.open=true;e.scrollIntoView()}}};
 const tick=()=>api("/api/state").then(render).catch(()=>{$("st").textContent="ارتباط با برنامه قطع شده؛ پنجره رو ببند و دوباره باز کن."});
 tick();setInterval(tick,1500);
 </script></body></html>
