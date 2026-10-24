@@ -103,4 +103,32 @@ import inspect
 src = inspect.getsource(W.main)
 assert src.index("LOCK_PORT") < src.index("xray.pid") < src.index("restore_proxy()")
 print("8) single-instance lock is taken before touching the saved PID / system proxy OK")
+
+# ۹) «خاموش» واقعاً یعنی هیچ جابه‌جایی خودکار: چک سایت‌ها با mode=off سرور رو عوض نمی‌کنه، با mode=stable می‌کنه
+def run_sites_watch(mode):
+    W.STOP.clear(); W.GEN[0] += 1; g = W.GEN[0]
+    W.MODE[0] = mode; W.CALL[0] = False
+    W.S.update(stage="connected", note=""); W.POOL["active"] = [mk("30.0.0.1")]
+    W.SITE_EVERY = 5; W.calm_ok = lambda: True
+    W.cfgscan.site_check = lambda port, t: dict(yt=0, ig=0, tg=0)
+    W.sites_ok = lambda c: False
+    hit = []; W.sites_guard = lambda gen, profile, found: hit.append(1)
+    real = W.time.sleep; W.time.sleep = lambda x: real(0.002)
+    th = threading.Thread(target=W.sites_watch, args=(g, "balanced", set()), daemon=True); th.start()
+    real(0.4); W.GEN[0] += 1; real(0.1); W.time.sleep = real
+    return hit
+assert run_sites_watch("off") == [] and "خاموشه" in W.S["note"]
+assert len(run_sites_watch("stable")) >= 1
+print("9) mode=off: site watcher never switches by itself; stable still does OK")
+
+# ۱۰) مرحله‌ی نمایش‌داده‌شده با رفتار واقعی جور باشه: وسط خواب بین دو دور جستجو «waiting»، نه «searching»
+act, calls, checked = setup([poor], lambda c: poor)
+W.CALL_MAX_RETRIES, W.CALL_RETRY_SECS = 2, 3
+W.POOL["standby"] = [mk("40.0.0.1")]
+th = threading.Thread(target=W.call_prepare, args=(W.GEN[0], "balanced", True), daemon=True); th.start()
+t0 = time.time()
+while time.time() - t0 < 3 and W.call_phase() != "waiting": time.sleep(0.05)
+assert W.call_phase() == "waiting", W.call_phase()
+W.set_call(False); th.join(5); assert not th.is_alive() and W.call_phase() == ""
+print("10) displayed call phase matches real behaviour (waiting between rounds, stops when call mode is turned off) OK")
 print("ALL OK")
