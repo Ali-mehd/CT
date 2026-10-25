@@ -74,6 +74,7 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
  <div id="st">آماده‌ست</div><div id="sub"></div>
  <div class="bar" id="barw"><i id="pb"></i></div>
  <div class="note" id="sub2"></div>
+ <div class="m" id="actln" hidden style="margin-top:6px"></div>
  <div class="chips" id="sitesln" title="برای تست دوباره کلیک کن" style="cursor:pointer"></div>
  <div class="warnbar" id="tgbadge" hidden>حالت اضطراری فقط تلگرام فعاله؛ یوتیوب و اینستاگرام ممکنه باز نشن.</div>
  <div id="tgact" style="display:none;margin-top:12px"><button class="btn" id="tgbtn" style="margin:0">اتصال با «حالت اضطراری: فقط تلگرام»</button></div>
@@ -111,8 +112,8 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
 <p class="hint" id="callmgd" hidden></p>
 <div class="modes" id="modes"></div><div class="m" id="mdesc"></div>
  <div class="row"><span>جابه‌جایی سرور <button class="i" data-t="h-fo">ⓘ</button></span>
-  <span class="seg"><label><input type="radio" name="mode" value="stable" checked><span>هوشمند</span></label><label><input type="radio" name="mode" value="fast"><span>کم‌پینگ</span></label><label><input type="radio" name="mode" value="off"><span>ثابت</span></label></span></div>
- <p class="hint" id="h-fo" hidden><b>هوشمند:</b> تا وقتی سرور فعلی سالمه عوضش نمی‌کنه (حتی اگه دیگری لحظه‌ای پینگ کمتر داشته باشه). فقط وقتی واقعاً قطع یا ضعیف بشه می‌ره سراغ سروری که با چند تست پشت‌سرهم کاملاً سالم بوده؛ سرور خراب تا ۱۰ دقیقه برنمی‌گرده. هر چند دقیقه اگه فعلی خیلی کند باشه و جایگزین پایدارِ واضحاً بهتری باشه، با امکان بازگشت ارتقا می‌ده.<br><b>کم‌پینگ:</b> چند سرور هم‌زمان و هر چند ثانیه کم‌پینگ‌ترین؛ ممکنه مدام جابه‌جا بشه.<br><b>ثابت:</b> یک سرور، بدون جابه‌جایی.</p>
+  <span class="seg"><label><input type="radio" name="mode" value="stable" checked><span>خودکار</span></label><label><input type="radio" name="mode" value="off"><span>قفل روی این سرور</span></label></span></div>
+ <p class="hint" id="h-fo" hidden><b>خودکار:</b> تا وقتی سرور فعلی سالمه عوضش نمی‌کنه. فقط وقتی واقعاً قطع یا ضعیف بشه (یا در «فوق هوشمند» وقتی کارت لاک‌پشتی بشه) سراغ سروری می‌ره که با تست واقعی بهتره؛ سرور خراب تا ۱۰ دقیقه برنمی‌گرده.<br><b>قفل روی این سرور:</b> هیچ جابه‌جایی خودکاری انجام نمی‌شه، حتی اگه سرور قطع بشه؛ فقط خودت می‌تونی عوضش کنی.</p>
  <div class="row"><span>حالت اضطراری: فقط تلگرام <button class="i" data-t="h-tg">ⓘ</button></span><label class="sw"><input type="checkbox" id="tgonly"><span></span></label></div>
  <p class="hint" id="h-tg" hidden>حالت عادی فقط به سروری وصل می‌شه که یوتیوب، اینستاگرام و تلگرام هر سه رو باز کنه. این گزینه برای وقتیه که فیلتر خیلی شدیده و فقط تلگرام لازمه: به سروری وصل می‌شه که تلگرام رو باز می‌کنه، حتی اگه یوتیوب و اینستاگرام باز نشن. از اتصال بعدی اعمال می‌شه.</p>
  <div class="row auto"><span>جستجوی خودکار منبع تازه <button class="i" data-t="h-as">ⓘ</button></span><label class="sw"><input type="checkbox" id="autosrc" checked><span></span></label></div>
@@ -190,10 +191,10 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
 <button class="btn" id="obok">تأیید و ادامه</button></div></div>
 <script>
 const T="__T__";
-const M={balanced:["متعادل","تأخیر + ثبات"],speed:["سرعت","سریع‌ترین دانلود"],stable:["پایداری","بدون حتی یک خطا"],secure:["امنیت","فقط رمزنگاری سخت‌گیرانه"],upload:["آپلود","بیشترین سرعت آپلود"]};
-const MD={balanced:"بهترین ترکیب تأخیر و ثبات؛ مناسب بیشتر کارها.",speed:"سرعت دانلود هر سرور از داخل تونل اندازه‌گرفته می‌شه و سریع‌ترین انتخاب می‌شه.",stable:"فقط سروری که ۵ تست پشت‌سرهم بی‌خطا داشته؛ کم‌نوسان‌ترین اول.",secure:"فقط Reality/TLS بدون هشدار تنظیماتی؛ گزینه‌ها کمترن ولی امن‌ترن.",upload:"سرعت «آپلود» هر سرور از داخل تونل اندازه‌گرفته می‌شه (فقط بدنه‌ای که مقصد تأیید کرده) و بهترین انتخاب می‌شه. برای فرستادن فایل/ویدیو/عکس؛ بدون mux و بدون خرد کردن بسته."};
+const M={auto:["فوق هوشمند","خودش تشخیص می‌ده چی‌کار می‌کنی"],speed:["سرعت","سریع‌ترین دانلود"],stable:["پایداری","بدون حتی یک خطا"],secure:["امنیت","فقط رمزنگاری سخت‌گیرانه"],upload:["آپلود","بیشترین سرعت آپلود"]};
+const MD={auto:"پیشنهادی. برنامه خودش می‌فهمه الان تماس داری، فایل آپلود/دانلود می‌کنی، سراغ بانک و کار حساس رفتی، یا فقط گشت‌وگذار می‌کنی، و همون‌طور رفتار می‌کنه: وسط تماس و کار حساس سرور رو عوض نمی‌کنه، اگه آپلود/دانلودت لاک‌پشتی شد سرور سریع‌تر رو با سرعت واقعی می‌سنجه، و برای گشت‌وگذار زودتر سراغ سرور بهتر می‌ره.",speed:"سرعت دانلود هر سرور از داخل تونل اندازه‌گرفته می‌شه و سریع‌ترین انتخاب می‌شه.",stable:"فقط سروری که ۵ تست پشت‌سرهم بی‌خطا داشته؛ کم‌نوسان‌ترین اول.",secure:"فقط Reality/TLS بدون هشدار تنظیماتی؛ گزینه‌ها کمترن ولی امن‌ترن.",upload:"سرعت «آپلود» هر سرور از داخل تونل اندازه‌گرفته می‌شه (فقط بدنه‌ای که مقصد تأیید کرده) و بهترین انتخاب می‌شه. برای فرستادن فایل/ویدیو/عکس؛ بدون mux و بدون خرد کردن بسته."};
 const TB=[["srv","سرورها"],["adv","پیشرفته"],["help","راهنما"]];
-let prof="balanced",tab="srv",S={},last={},cancelling=0,loaded=false;
+let prof="auto",tab="srv",S={},last={},cancelling=0,loaded=false;
 const $=i=>document.getElementById(i);
 const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-T":T,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 const once=(k,v,fn)=>{const j=JSON.stringify(v);if(last[k]!==j){last[k]=j;fn()}};
@@ -220,8 +221,8 @@ function showOb(s){$("ob").hidden=false;$("obhc").checked=document.documentEleme
 $("obhc").onchange=()=>document.documentElement.classList.toggle("hc",$("obhc").checked);
 $("obok").onclick=()=>{const b={fs:obfs,hc:$("obhc").checked,onboarded:true};if(!$("obnt").hidden)b.notemp=document.querySelector("input[name=obnt]:checked").value;api("/api/settings",b).then(()=>{$("ob").hidden=true}).catch(()=>{$("ob").hidden=true})};
 const save=()=>api("/api/settings",cur()).then(r=>{if(r&&r.applied&&r.applied.length)toast(r.applied.join("  •  "));return r}).catch(()=>{});
-function applySettings(x){if(!x)return;if(x.profile&&M[x.profile])prof=x.profile;
- if(x.mode)document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==x.mode);
+function applySettings(x){if(!x)return;if(x.profile)prof=M[x.profile]?x.profile:"auto";
+ if(x.mode){const mm=x.mode=="off"?"off":"stable";document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==mm)}
  if(x.speed)document.querySelectorAll("input[name=sp]").forEach(r=>r.checked=r.value==x.speed);
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
  if(typeof x.sysproxy=="boolean")$("sysp").checked=x.sysproxy;if(typeof x.tgonly=="boolean")$("tgonly").checked=x.tgonly;$("autosrc").checked=x.autosrc!==false;$("npon").checked=x.netprobe!==false;$("evok").checked=x.evolve_ok===true;if(x.direct!==undefined)$("dir").value=x.direct;modes()}
@@ -256,6 +257,13 @@ function render(s){S=s;const st=s.stage,c=s.connected;
   $("ddiag").textContent="تست‌شده "+(d.tested||0)+": کارکرده "+(d.ok||0)+"، جواب نداده "+(d.no_reach||0)+"، جواب داده ولی ترافیک رد نشد "+(d.no_traffic||0)+"، ناامن "+(d.unsafe||0)+(d.skip&&d.skip.quarantine?"، از قرنطینه رد شد "+d.skip.quarantine:"");
   let w="";if(d.tested>=8&&!d.ok){w=d.no_reach>=0.8*d.tested?"بیشترِ سرورها اصلاً جواب ندادن: معمولاً یعنی پورت/IP فیلتره یا اینترنت قطعه.":d.no_traffic>=0.5*d.tested?"سرورها جواب دادن ولی ترافیک واقعی رد نشد: معمولاً فیلتر عمیق (DPI) یا محدودیت.":"هیچ سرور سالمی پیدا نشد؛ منبع‌ها یا شبکه رو بررسی کن."}$("dwhy").textContent=w;
   $("dlog").textContent=(s.log||[]).join("\n")});
+ once("act",[s.act,s.profile,s.stage,s.mode],()=>{const e=$("actln");if(s.profile!="auto"||s.stage!="connected"){e.hidden=true;return}
+  e.hidden=false;e.textContent="";const a=s.act;
+  if(!a){e.textContent="فوق هوشمند: دارم فعالیتت رو یاد می‌گیرم …";return}
+  const t=el("b","الان: "+a.fa);e.appendChild(t);
+  if(a.reason&&a.act!="idle")e.appendChild(document.createTextNode(" — "+a.reason));
+  if(a.q)e.appendChild(document.createTextNode(" | کیفیت تماس: "+a.q.grade_fa+" (MOS≈"+a.q.mos+")"));
+  if(s.mode=="off")e.appendChild(el("div","قفلِ سرور روشنه؛ جابه‌جایی خودکار انجام نمی‌شه."));else if(a.hint)e.appendChild(el("div",a.hint))});
  once("call",[s.call,s.stage],()=>{const c=s.call||{},q=c.q,b=$("callq");b.textContent="";$("callon").checked=!!c.on;$("callbox").style.display=c.on?"block":"none";
   const FP={connecting:"دارم وصل می‌شم و سرور مناسب تماس رو انتخاب می‌کنم …",searching:"دارم بهترین سرور تماس رو می‌گردم …",locked:"سرور مناسب تماس انتخاب شد؛ فقط نظارت آروم انجام می‌شه و وسط تماس سرور عوض نمی‌شه.",waiting:"بهترین سرور موجود همینه؛ چند دقیقه دیگه دوباره می‌گردم (یا دکمه‌ی «بهترین سرور برای تماس» رو بزن).",monitoring:"روی بهترین سرور موجود هستم؛ جایگزین بهتری پیدا نشد و فقط نظارت آروم انجام می‌شه.",no_udp:"UDP روی این شبکه جواب نمی‌ده؛ سرور عوض نمی‌شه.",idle:"وصل نیستم؛ با روشن‌کردن حالت تماس خودش وصل می‌شه."};
   $("callph").textContent=FP[c.phase]||"";const mg=c.managed,bn=$("callmgd");bn.hidden=!c.on;
