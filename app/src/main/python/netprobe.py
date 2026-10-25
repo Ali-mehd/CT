@@ -461,29 +461,35 @@ def net_kind():
     """نوع/اثرانگشت «خود اتصال» (نه اپراتور): مودم/وای‌فای خونه، نت همراه، یا هات‌اسپات. هیچ ترافیکی نمی‌فرسته و اگه نشه تشخیص داد خالی برمی‌گردونه.
     ASN تنها کافی نیست: مودم و سیم‌کارت از یک اپراتور هم ممکنه باشن. پس نوع اتصال هم توی شناسه‌ی شبکه می‌ره."""
     kind = ""
-    if os.environ.get("CFG_ANDROID") == "1":  # اندروید: از خود سیستم می‌پرسیم نت همراهه یا وای‌فای
+    droid = os.environ.get("CFG_ANDROID") == "1"
+    if droid:  # اندروید: از خود سیستم می‌پرسیم. شبکه‌ی VPN (تونل خودمون) رو نادیده می‌گیریم تا وصل یا قطع بودن تونل نوع شبکه رو عوض نکنه
         try:
-            from java import jclass
             from com.chaquo.python import Python
-            ctx = Python.getPlatform().getApplication()
-            cm = ctx.getSystemService("connectivity")
-            caps = cm.getNetworkCapabilities(cm.getActiveNetwork())
-            if caps is not None:
-                if caps.hasTransport(0):
-                    kind = "mob"
-                elif caps.hasTransport(1):
-                    kind = "wifi"
+            cm = Python.getPlatform().getApplication().getSystemService("connectivity")
+            have = set()
+            for n in cm.getAllNetworks():
+                caps = cm.getNetworkCapabilities(n)
+                if caps is None or caps.hasTransport(4) or not caps.hasCapability(12):  # VPN یا بدون اینترنت
+                    continue
+                if caps.hasTransport(1):
+                    have.add("wifi")
+                elif caps.hasTransport(0):
+                    have.add("mob")
                 elif caps.hasTransport(3):
-                    kind = "eth"
+                    have.add("eth")
+            for k in ("eth", "wifi", "mob"):  # اندروید وقتی چند شبکه هست، همین ترتیب رو ترجیح می‌ده
+                if k in have:
+                    kind = k
+                    break
         except Exception:
             kind = ""
     ip = ""
     try:  # آدرس محلی؛ بدون ارسال بسته (UDP connect فقط مسیر رو انتخاب می‌کنه)
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1)
-        s.connect(("203.0.113.1", 9))
-        ip = s.getsockname()[0]
-        s.close()
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.settimeout(1)
+        sk.connect(("203.0.113.1", 9))
+        ip = sk.getsockname()[0]
+        sk.close()
     except Exception:
         ip = ""
     lan = ""
@@ -492,9 +498,9 @@ def net_kind():
         if len(o) == 4:
             if ip.startswith("192.168.") or ip.startswith("172.20.10."):
                 lan = ".".join(o[:3])      # مودم/هات‌اسپات: زیرشبکه‌ی ثابت
-            elif kind != "mob":
-                lan = ".".join(o[:2])      # شبکه‌ی 10.x یا 172.16-31 (مودم/سازمان)
-            if not kind and (ip.startswith("100.") or ip.startswith("192.0.0.")):
+            elif not droid and kind != "mob":
+                lan = ".".join(o[:2])      # شبکه‌ی 10.x یا 172.16-31 روی ویندوز (مودم/سازمان). توی اندروید این آدرس‌ها می‌تونن آدرس تونل باشن؛ نادیده
+            if not kind and not droid and (ip.startswith("100.") or ip.startswith("192.0.0.")):
                 kind = "mob"               # CGNAT / CLAT معمولاً نت همراهه
     if kind == "mob":
         return "mob"                       # آدرس محلی نت همراه هر بار عوض می‌شه؛ توی شناسه نمیاد

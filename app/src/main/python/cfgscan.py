@@ -47,6 +47,7 @@ FLAGS = {
     "high_jitter": ("نوسان تأخیر زیاد", 15, "warn"),
     "blocklisted": ("آدرس سرور روی فهرست سیاه امنیتی شناخته‌شده‌ست؛ تست نشد", 100, "danger"),
     "unsupported": ("نوع/ترنسپورت پشتیبانی‌نشده در این ابزار", 0, "info"),
+    "local_block": ("اتصال به این آدرس را آنتی‌ویروس/فایروالِ همین دستگاه بست؛ خرابیِ سرور حساب نمی‌شود", 0, "info"),
 }
 
 
@@ -508,8 +509,26 @@ def static(c):
     return c
 
 
+try:
+    import cfgtrace as _T
+except Exception:  # بدون ردپا هم کار می‌کنه
+    _T = None
+
+REACH_CACHE = {}   # (ip, port) -> (reachable, tcp_ms, local_block, زمان)؛ چند کانفیگ با یک آدرس، یک بار وصل می‌شن (cfgweb اول هر جستجو خالیش می‌کنه)
+REACH_TTL = 180
+LOCAL_BLOCK = {}   # ip -> زمان: آدرس‌هایی که خودِ سیستم‌عامل/آنتی‌ویروسِ این دستگاه اتصالشون رو بسته؛ دوباره بهشون وصل نمی‌شیم (cfgweb ذخیره/بارگذاری می‌کنه)
+LOCAL_BLOCK_MAX, LOCAL_BLOCK_DAYS = 5000, 7
+_LOCAL_CODES = (10013, 13)  # WSAEACCES (ویندوز: فایروال/آنتی‌ویروس اتصال خروجی رو بست) | EACCES
+
+
+def _conn_code(e):
+    return getattr(e, "winerror", None) or getattr(e, "errno", None) or type(e).__name__
+
+
 def reach(c, timeout=4):
-    """DNS + بررسی آدرس داخلی + TCP connect. هیچ داده‌ای ارسال نمی‌شه."""
+    """DNS + بررسی آدرس داخلی + TCP connect. هیچ داده‌ای ارسال نمی‌شه.
+    اگه خودِ سیستم‌عامل اتصال خروجی رو ببنده (کد ۱۰۰۱۳ در ویندوز: رفتار فایروال/آنتی‌ویروس)، این «خرابی سرور» نیست: پرچم local_block
+    می‌خوره، آدرس ثبت می‌شه تا دوباره بهش وصل نشیم، و تست (یادگیری/قرنطینه) به‌حساب سرور نمی‌آد."""
     c["reachable"] = False
     try:
         infos = socket.getaddrinfo(c["host"], c["port"], type=socket.SOCK_STREAM)
@@ -534,14 +553,50 @@ def reach(c, timeout=4):
     if c["proto"] in ("hysteria2", "tuic"):  # UDP: با TCP نمی‌شه سنجید؛ تست واقعی خودش تصمیم می‌گیره
         c["reachable"], c["tcp_ms"] = True, None
         return c
+    now = time.time()
+    blocked_here, tried = 0, 0
     for a in ips:  # فقط به آی‌پی‌های همین بررسی وصل می‌شیم (قبلاً اسم دوباره resolve می‌شد و می‌تونست جواب دیگه‌ای بده)
+        key = (a, c["port"])
+        hit = REACH_CACHE.get(key)
+        if hit and now - hit[3] < REACH_TTL:  # همین آدرس و پورت همین الان تست شده
+            if hit[0]:
+                c["ip"], c["reachable"], c["tcp_ms"] = a, True, hit[1]
+                break
+            blocked_here += 1 if hit[2] else 0
+            tried += 1
+            continue
+        tl = LOCAL_BLOCK.get(a)
+        if tl and now - tl < LOCAL_BLOCK_DAYS * 86400:  # قبلاً آنتی‌ویروس/فایروال همین آدرس رو بسته؛ دوباره وصل نمی‌شیم (حتی تلاشِ وصل هم هشدار می‌سازه)
+            blocked_here += 1
+            tried += 1
+            continue
         t0 = time.time()
+        tried += 1
         try:
             socket.create_connection((a, c["port"]), timeout=timeout).close()
-            c["ip"], c["reachable"], c["tcp_ms"] = a, True, int((time.time() - t0) * 1000)
+            ms = int((time.time() - t0) * 1000)
+            c["ip"], c["reachable"], c["tcp_ms"] = a, True, ms
+            REACH_CACHE[key] = (True, ms, False, time.time())
+            if _T:
+                _T.perf("tcp_ok_s", time.time() - t0)
+                if ms <= 1:  # اتصال «آنی» به آدرس دور: نشانه‌ی احتمالیِ رهگیری توسط نرم‌افزار امنیتی محلی (حدس؛ برای گزارش شمرده می‌شه)
+                    _T.count("tcp_instant")
             break
-        except OSError:
+        except OSError as e:
+            code, dt = _conn_code(e), time.time() - t0
+            lb = code in _LOCAL_CODES
+            if lb:
+                blocked_here += 1
+                if len(LOCAL_BLOCK) < LOCAL_BLOCK_MAX and (code == 10013 or not ANDROID):  # اندروید: کد ۱۳ معمولاً محدودیتِ کل دستگاهه (دیتاسیور/فایروال/پس‌زمینه)؛ آدرس‌ها هفت روز سوخته نشن
+                    LOCAL_BLOCK[a] = time.time()
+            REACH_CACHE[key] = (False, None, lb, time.time())
+            if _T:
+                _T.count(f"conn:{code}")  # توزیع کدهای خطا: دیدنش توی گزارشِ کامپیوتر نشون می‌ده آنتی‌ویروس دقیقاً چطور بلاک می‌کنه
+                if isinstance(e, ConnectionRefusedError) and dt < 0.003:
+                    _T.count("refused_fast")
             continue
+    if not c["reachable"] and tried and blocked_here == tried:
+        c["flags"].add("local_block")
     return c
 
 
@@ -786,6 +841,96 @@ def measure_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
     return None
 
 
+UP_URLS = ["https://speed.cloudflare.com/__up"]  # آدرسِ آپلودِ تست سرعتِ کلودفلر (POST؛ بدنه رو می‌خونه و دور می‌ریزه)
+
+
+def _socks_tls(port, host, dport, https, timeout):
+    """اتصال به host:dport از راه SOCKS5 محلی (دامنه رو خودِ سرور resolve می‌کنه) و در صورت نیاز TLS."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        s.settimeout(timeout)
+        s.sendall(b"\x05\x01\x00")
+        if recvn(s, 2) != b"\x05\x00":
+            raise ConnectionError("socks")
+        h = host.encode()
+        s.sendall(b"\x05\x01\x00\x03" + bytes([len(h)]) + h + struct.pack(">H", dport))
+        r = recvn(s, 4)
+        if r[1] != 0:
+            raise ConnectionError("connect")
+        recvn(s, 6) if r[3] == 1 else recvn(s, 18) if r[3] == 4 else recvn(s, recvn(s, 1)[0] + 2)
+        if https:
+            s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
+        return s
+    except Exception:
+        s.close()
+        raise
+
+
+def _up_stream(port, url, secs, res, i, timeout, chunk=262144):
+    """یک اتصال آپلود از داخل تونل: بدنه‌ها (هر کدوم chunk بایت) پشت‌سرهم POST می‌شن و فقط بدنه‌ای حساب می‌شه که سرور «دریافتش» رو با جواب ۲xx تأیید کرده
+    (نه بایتی که فقط توی بافر سیستم‌عامل نشسته)؛ پس عدد، آپلودِ واقعیِ رسیده به مقصد است. زمان از شروع ارسال اولین بدنه حساب می‌شه."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        host, https = u.hostname, u.scheme == "https"
+        s = _socks_tls(port, host, u.port or (443 if https else 80), https, timeout)
+        try:
+            path = (u.path or "/") + ("?" + u.query if u.query else "")
+            body = os.urandom(1024) * (chunk // 1024)
+            hdr = (f"POST {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\nContent-Type: application/octet-stream\r\n"
+                   f"Content-Length: {len(body)}\r\nConnection: keep-alive\r\n\r\n").encode()
+            t0 = time.time()
+            end, n, t_last = t0 + secs, 0, None
+            while time.time() < end:
+                s.sendall(hdr + body)
+                buf, t_hdr = b"", time.time() + timeout
+                while b"\r\n\r\n" not in buf and len(buf) < 16384 and time.time() < t_hdr:
+                    x = s.recv(8192)
+                    if not x:
+                        break
+                    buf += x
+                line = buf.split(b"\r\n", 1)[0]
+                if b" 2" not in line[:16]:
+                    break  # سرور آپلود رو نپذیرفت
+                head = buf.partition(b"\r\n\r\n")[0].lower()
+                clen = 0
+                if b"content-length:" in head:
+                    try:
+                        clen = int(head.split(b"content-length:")[1].split(b"\r\n")[0])
+                    except ValueError:
+                        clen = 0
+                rest = len(buf.partition(b"\r\n\r\n")[2])
+                while rest < clen and time.time() < t_hdr:  # جواب کوچیک رو کامل بخون تا اتصال برای بدنه‌ی بعدی تمیز بمونه
+                    x = s.recv(8192)
+                    if not x:
+                        break
+                    rest += len(x)
+                n += len(body)
+                t_last = time.time()
+            if n and t_last and t_last > t0:
+                res[i] = (n, t_last - t0)
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+
+def measure_upload_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
+    """سرعت واقعی «آپلود» از داخل تونل (کیلوبیت بر ثانیه)؛ چند اتصال هم‌زمان. فقط بدنه‌های تأییدشده‌ی سرور حساب می‌شن."""
+    import threading
+    for url in (urls or UP_URLS):
+        res = [None] * streams
+        ths = [threading.Thread(target=_up_stream, args=(port, url, secs, res, i, timeout), daemon=True) for i in range(streams)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join(secs + timeout * 2 + 2)
+        got = [r for r in res if r]
+        total, dt = sum(n for n, _ in got), max((d for _, d in got), default=0)
+        if total >= 100_000 and dt > 0.4:
+            return int(total * 8 / 1000 / dt)
+    return None
+
+
 SITES = {"yt": "https://www.youtube.com/generate_204", "ig": "https://www.instagram.com/robots.txt"}
 TG_DCS = (("149.154.167.51", 443), ("149.154.167.91", 443), ("149.154.175.53", 443))  # سرورهای واقعی خود تلگرام (اپ تلگرام به اینا وصل می‌شه، نه به telegram.org)
 
@@ -809,45 +954,65 @@ def tcp_via(port, ip, dport, timeout=5):
 def site_check(port, timeout=5):
     """از داخل تونل: یوتیوب، اینستاگرام و تلگرام واقعاً می‌رسن؟
     یوتیوب و اینستاگرام: هر پاسخ HTTP یعنی رسیده (فقط خطای شبکه و ۵xx یعنی نه). تلگرام: اتصال به سرورهای خود تلگرام باز بشه.
-    هر تست اگه بار اول شکست خورد یک بار دیگه با زمان بیشتر امتحان می‌شه تا کندیِ لحظه‌ای به‌حساب بسته‌بودن نیاد."""
-    res = {}
+    سه مرحله، تا هم سرور مرده زود رد بشه و هم سرور خوبِ کند ظلم نبینه:
+      ۱) هر سه سایت هم‌زمان با مهلت کوتاه. ۲) اگه هیچ‌کدوم جواب نداد، فقط یوتیوب یک بار با مهلت بلندتر؛ بازم نه = سرور رد (به‌جای ~۱ دقیقه، حدود ۱۰ ثانیه).
+      ۳) هر سایتی که توی مرحله‌ی ۱ جواب نداد (و سرور زنده‌ست) با روش کامل قبلی (دو بار، مهلت بلندتر) دوباره امتحان می‌شه."""
+    quick = max(2.5, timeout * 0.6)
 
-    def http_ok(url):
+    def http_once(url, t):
+        try:
+            st, _, _ = fetch(port, url, t)
+            return st < 500 and st not in (403, 429)  # ۴۰۳/۴۲۹ یعنی گوگل/اینستاگرام این آی‌پی رو بسته یا محدود کرده
+        except Exception:
+            return False
+
+    def http_full(url):
         for t in (timeout, timeout + 3):
-            try:
-                st, _, _ = fetch(port, url, t)
-                if st < 500 and st not in (403, 429):  # ۴۰۳/۴۲۹ یعنی گوگل/اینستاگرام این آی‌پی رو بسته یا محدود کرده؛ قبلاً «باز» حساب می‌شد
-                    return True
-            except Exception:
-                pass
+            if http_once(url, t):
+                return True
             time.sleep(0.4)
         return False
 
-    def tg_ok():
-        for t in (timeout, timeout + 3):
-            for ip, dp in TG_DCS:
-                try:
-                    if tcp_via(port, ip, dp, t):
-                        return True
-                except Exception:
-                    pass
+    def tg_once(t, dcs):
+        for ip, dp in dcs:
+            try:
+                if tcp_via(port, ip, dp, t):
+                    return True
+            except Exception:
+                pass
         return False
 
-    def one(k, fn, *a):
-        try:
-            res[k] = bool(fn(*a))
-        except Exception:
-            res[k] = False
-    jobs = [("yt", http_ok, SITES["yt"]), ("ig", http_ok, SITES["ig"]), ("tg", tg_ok)]
-    ths = [threading.Thread(target=one, args=j, daemon=True) for j in jobs]
-    for t in ths:
-        t.start()
-    for t in ths:
-        t.join(timeout * 4 + 8)
+    def tg_full():
+        return tg_once(timeout, TG_DCS) or tg_once(timeout + 3, TG_DCS)
+
+    def run(jobs, wait):
+        res = {}
+
+        def one(k, fn, *a):
+            try:
+                res[k] = bool(fn(*a))
+            except Exception:
+                res[k] = False
+        ths = [threading.Thread(target=one, args=j, daemon=True) for j in jobs]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join(wait)
+        return res
+
+    res = run([("yt", http_once, SITES["yt"], quick), ("ig", http_once, SITES["ig"], quick), ("tg", tg_once, quick, TG_DCS[:2])], quick * 2 + 4)
+    if not any(res.get(k) for k in ("yt", "ig", "tg")):
+        if not http_once(SITES["yt"], timeout + 3):  # سرور واقعاً کنده یا بسته‌ست؛ وقت بیشتری روش هدر نمی‌دیم
+            return {"yt": False, "ig": False, "tg": False}
+        res["yt"] = True
+    redo = {"yt": (http_full, SITES["yt"]), "ig": (http_full, SITES["ig"]), "tg": (tg_full,)}
+    todo = [(k,) + redo[k] for k in ("yt", "ig", "tg") if not res.get(k)]
+    if todo:
+        res.update(run(todo, timeout * 4 + 8))
     return {k: bool(res.get(k)) for k in ("yt", "ig", "tg")}
 
 
-def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=False):
+def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=False, up=False):
     port, tmp = free_port(), tempfile.mkdtemp(prefix="cfgscan_")
     env = dict(os.environ) if ANDROID else {k: v for k, v in os.environ.items()
            if k.upper() in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "HOME")}
@@ -866,27 +1031,36 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=Fals
             p.stdin.close()
         except OSError:
             pass
-    lat, ok = [], 0
+    lat, ok, why, up_ok = [], 0, "", False  # why: علت «زنده نبودن» (برای گزارش تکامل؛ فقط یک دسته، بدون آدرس)
     try:
         t_end = time.time() + (9 if c["proto"] in SB_PROTOS else 6)
         while time.time() < t_end and p.poll() is None:
             try:
                 socket.create_connection(("127.0.0.1", port), timeout=0.3).close()
+                up_ok = True
                 break
             except OSError:
                 time.sleep(0.2)
+        core_why = "" if up_ok else ("core_exit" if p.poll() is not None else "core_port")  # هسته (xray/sing-box) بلافاصله مرد | پورتش تا مهلت باز نشد
         for _ in range(rounds):
             try:
                 st, _, ms = fetch(port, LAT_URL, timeout)
                 if st == 204:
                     ok += 1
                     lat.append(ms)
+                else:
+                    why = "http_" + str(st)[:3]
             except ssl.SSLCertVerificationError:
                 c["flags"].add("tls_verify_fail")
+                why = "tls_verify"
                 break
-            except Exception:
-                pass
+            except Exception as e:  # تونل جواب نداد؛ نوعِ خطا کمک می‌کنه بفهمیم سرور بسته‌ست، کنده یا تونل بالا نیومده
+                why = ("timeout" if isinstance(e, (socket.timeout, TimeoutError)) else
+                       "tunnel_refused" if isinstance(e, ConnectionError) and str(e) in ("connect", "socks") else
+                       "reset" if isinstance(e, ConnectionResetError) else "tunnel_" + type(e).__name__[:20])
             time.sleep(0.4)
+        if not ok and core_why:
+            why = core_why  # ریشه‌ی مشکل «هسته بالا نیومد» بوده؛ خطاهای بعدیِ اتصال فقط نتیجه‌ی همونن
         if ok:
             try:
                 _, body, _ = fetch(port, IP_URL, timeout)
@@ -908,7 +1082,11 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=Fals
             if call:  # حالت تماس: کیفیت واقعی UDP (تأخیر/نوسان/افت) از داخل همین تونل
                 import cfgcall
                 c["call"] = cfgcall.measure_via(port, 12)
-            if speed:  # سرعت واقعی دانلود از داخل تونل (فقط روی نامزدهای نهایی)
+            if speed and up:  # حالت آپلود: سرعت واقعی «آپلود» (به‌جای دانلود) از داخل تونل
+                k = measure_upload_kbps(port, secs, 2, timeout)
+                if k:
+                    c["kbps_up"] = k
+            elif speed:  # سرعت واقعی دانلود از داخل تونل (فقط روی نامزدهای نهایی)
                 k = measure_kbps(port, secs, 2, timeout)
                 if k:
                     c["kbps"] = k
@@ -922,6 +1100,10 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=Fals
     c["rounds"], c["ok"] = rounds, ok
     c["success"] = round(ok / rounds, 2) if rounds else 0
     c["alive"] = ok > 0
+    if ok:
+        c.pop("fail", None)
+    elif why:
+        c["fail"] = why
     if lat:
         c["lat"] = int(statistics.mean(lat))
         c["jitter"] = int(statistics.pstdev(lat)) if len(lat) > 1 else 0

@@ -7,6 +7,7 @@ PROFILES = {
     "speed": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=False, desc="سرعت"),
     "stable": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=False, desc="پایداری"),
     "secure": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=True, desc="امنیت بیشتر"),
+    "upload": dict(fragment=False, mux=False, strategy="leastPing", only_encrypted=False, desc="بیشترین آپلود"),  # بدون mux (سرعتِ آپلودِ یک جریانِ بزرگ رو می‌خوابونه) و بدون خرد کردن بسته‌ها
 }
 CALL = [False]  # حالت تماس: فقط یک خروجی ثابت (بدون balancer)، بدون mux و sniffing، با مهلت بی‌کاری بلندتر
 COUNTRY_DIRECT = {"ir": ["domain:ir", "geosite:category-ir"], "az": ["domain:az"], "tr": ["domain:tr"],

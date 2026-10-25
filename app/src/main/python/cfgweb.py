@@ -22,6 +22,12 @@ import cfgscan, cfgforge, report  # noqa: E402
 cfgres = None  # تنظیم منابع فقط در نسخه‌ی اندروید هست
 import cfgcall  # noqa: E402
 try:
+    import cfgtrace as T  # ردپای بی‌خطر برای گزارش تکامل (خط زمانی، خطاهای بلعیده‌شده، زمان‌سنجی)
+except Exception:  # بدون ردپا هم برنامه مثل قبل کار می‌کنه
+    class T:
+        evt = err = count = perf = run_begin = run_mark = run_end = incident = staticmethod(lambda *a, **k: None)
+        snapshot = staticmethod(lambda *a, **k: {})
+try:
     import cfgres  # noqa: E402  (تنظیم خودکار منابع؛ فقط اندروید داده‌اش می‌ده)
 except Exception:
     cfgres = None
@@ -57,6 +63,7 @@ DIAG = {"tested": 0, "ok": 0, "no_reach": 0, "no_traffic": 0, "unsafe": 0, "skip
 
 def say(m):
     S["log"] = (S["log"] + [m])[-60:]
+    T.evt("log", m)  # همین پیام توی خط زمانیِ گزارش هم (با زمان) می‌ره
 
 
 # ------------------------------------------------------------ پروکسی ویندوز (با بازیابی خودکار)
@@ -331,6 +338,43 @@ def save_settings(j):
 
 
 
+LB_FILE = DATA / "localblock.json"
+AVF = [1.0]  # ضریب نرخ اتصال؛ وقتی آنتی‌ویروس/فایروال دستگاه اتصال‌ها رو می‌بنده کم می‌شه (فقط همین اجرا)
+
+
+def load_localblock():
+    """آدرس‌هایی که آنتی‌ویروس/فایروالِ همین دستگاه بسته؛ فقط محلی نگه داشته می‌شه و هیچ‌وقت وارد گزارش نمی‌شه."""
+    try:
+        d = json.loads(LB_FILE.read_text(encoding="utf-8"))
+        now = time.time()
+        cfgscan.LOCAL_BLOCK.update({k: v for k, v in d.items() if isinstance(v, (int, float)) and now - v < cfgscan.LOCAL_BLOCK_DAYS * 86400
+                                    and cfgscan.is_ip(k)})
+    except Exception:
+        pass
+
+
+def save_localblock():
+    try:
+        now = time.time()
+        d = {k: v for k, v in cfgscan.LOCAL_BLOCK.items() if now - v < cfgscan.LOCAL_BLOCK_DAYS * 86400}
+        cfgscan.LOCAL_BLOCK.clear()
+        cfgscan.LOCAL_BLOCK.update(d)
+        write_secret(LB_FILE, json.dumps(d))
+    except Exception:
+        pass
+
+
+def _av_note(lbn):
+    """آنتی‌ویروس/فایروال چند اتصال رو بسته: خبر به کاربر + کم‌کردن نرخ اتصال (حدس: الگوی «اسکن سریعِ آدرس‌های ناشناس» حساسیتشون رو بالا می‌بره)."""
+    frac = lbn[0] / max(1, lbn[1])
+    if frac >= 0.02 and AVF[0] > 0.4:
+        AVF[0] = 0.4
+    say(f"آنتی‌ویروس/فایروالِ این دستگاه {lbn[0]} اتصال از {lbn[1]} تست رو بست؛ این آدرس‌ها رد شدن و خرابیِ سرور حساب نشدن"
+        + ("، و نرخ اتصال کم شد تا حساسیتش بالا نره." if AVF[0] < 1 else "."))
+    T.evt("local_block", f"{lbn[0]}/{lbn[1]} بسته‌شده، ضریب نرخ {AVF[0]}")
+    T.incident("local_block", blocked=lbn[0], tried=lbn[1], pace_factor=AVF[0])
+
+
 def load_block():
     """فهرست سیاه همراه برنامه + نسخه‌ی به‌روزشده‌ی پس‌زمینه (اگه باشه)."""
     b = cfgscan.Blocklist()
@@ -436,14 +480,15 @@ def ping_key(c):
     return c.get("lat") or 99999
 
 
-def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None):
+def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None, up=None):
     """تست واقعی یه کانفیگ روی یه نمونه‌ی جدا از xray (روی یه کپی تا اصل خراب نشه)."""
     cc = dict(c)
     cc["flags"] = set(c["flags"])
     if sites:  # نتیجه‌ی قدیمی سایت‌ها نباید جای تست تازه بشینه
         cc.pop("sites", None)
     try:
-        cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites, CALL[0] if call is None else call)
+        cfgscan.live(cc, find_xray(), rounds, timeout, speed, secs, sites, CALL[0] if call is None else call,
+                    (CUR[0] == "upload") if up is None else up)  # حالت آپلود: به‌جای دانلود، آپلود سنجیده می‌شه
         if cc.get("call"):
             callmem_note(cc, cc["call"])
     except Exception:
@@ -463,7 +508,13 @@ def check_many(cs, rounds=1, timeout=3, workers=8, speed=False, secs=3.0, sites=
 
 MODE = ["stable"]
 CUR = ["balanced"]
-ROUNDS = {"balanced": 3, "speed": 2, "stable": 5, "secure": 3}
+ROUNDS = {"balanced": 3, "speed": 2, "stable": 5, "secure": 3, "upload": 2}
+SPEEDLIKE = ("speed", "upload")  # حالت‌هایی که «اندازه‌گیریِ واقعیِ سرعت» روی نامزدها انجام می‌دن (دانلود | آپلود)
+
+
+def spd(c, m=None):
+    """سرعتِ اندازه‌گیری‌شده‌ی مناسب حالت (کیلوبیت/ثانیه): آپلود برای «آپلود»، دانلود برای بقیه؛ ناشناخته = None."""
+    return c.get("kbps_up") if (m or CUR[0]) == "upload" else c.get("kbps")
 STRICT_BAD = {"no_tls", "weak_cipher", "legacy_aid", "no_sni", "insecure_cert"}
 
 
@@ -474,6 +525,8 @@ def rk(c):
         return call_key(c) + (eff(c),)
     if m == "speed":
         return (-((c.get("kbps") or 0) // 250), cost(c))
+    if m == "upload":  # بیشترین آپلودِ واقعی؛ بین سرورهای هم‌ردیف، همونی که پاسخ‌دهی بهتری داره
+        return (-((c.get("kbps_up") or 0) // 250), cost(c))
     if m == "stable":
         return (-(c.get("success") or 0), (c.get("jitter") or 0) + 0.5 * (c.get("lat") or 99999))
     if m == "secure":
@@ -483,7 +536,7 @@ def rk(c):
 
 def cost(c):
     """زمان تخمینی کامل شدن یک صفحه‌ی ~۵۰۰ کیلوبایتی: پاسخ‌دهی + زمان انتقال. پینگ بالا با سرعت خوب می‌تونه از پینگ پایین با سرعت ضعیف بهتر باشه."""
-    k = c.get("kbps")
+    k = spd(c)  # حالت آپلود: سرعت آپلود؛ بقیه: دانلود
     return (c.get("lat") or 99999) + (4_000_000 / k if k else 2500)
 
 
@@ -688,7 +741,7 @@ def direct_ip():
 
 
 def describe(c):
-    return dict(kbps=c.get("kbps"), host=c["host"][:24], proto=c["proto"], network=c["network"], security=c["security"],
+    return dict(kbps=c.get("kbps"), kbps_up=c.get("kbps_up"), host=c["host"][:24], proto=c["proto"], network=c["network"], security=c["security"],
                 port=c["port"], ping=c.get("tcp_ms") or c.get("lat"), sites=c.get("sites") or None,
                 warn=sorted({cfgscan.FLAGS[f][0] for f in c["flags"] if cfgscan.FLAGS[f][2] != "info"}))
 
@@ -725,12 +778,27 @@ def set_active(sel, ms=None):
 # ---- پایداری جابه‌جایی: جابه‌جایی «اختیاری» (کندی، سایت‌ها، ارتقا) فقط وقتی که اوضاع آرومه؛ قطعیِ واقعی همیشه فوراً رسیدگی می‌شه
 MIN_DWELL, FLAP_N, FLAP_WIN, FLAP_HOLD = 150, 3, 600, 900  # حداقل ماندگاری (ثانیه) | ۳ جابه‌جایی در ۱۰ دقیقه = نوسان ⇒ ۱۵ دقیقه ثابت
 SW_LOG = deque(maxlen=30)  # (زمان، دلیل)
+
+
+def _inc_state():
+    """عکسِ کوچیک و بی‌خطر از وضعیتِ همین لحظه برای «لحظه‌ی مشکل» (فقط دسته‌ها و عدد؛ بدون آدرس/IP)."""
+    try:
+        act = (POOL.get("active") or [None])[0]
+        return {"stage": S.get("stage"), "link": S.get("link"), "ms": (S.get("connected") or {}).get("ms") if isinstance(S.get("connected"), dict) else None,
+                "method": f"{act.get('proto')}/{act.get('network')}/{act.get('security')}" if act else None,
+                "port": act.get("port") if act else None, "active_n": len(POOL.get("active") or []), "standby_n": len(POOL.get("standby") or []),
+                "sites": POOL.get("sites"), "switches": POOL.get("switches"), "mode": MODE[0], "profile": CUR[0], "call": CALL[0], "net": (NETID[0] or "")[2:8],
+                "loadguard_f": round(LOAD.f, 2), "running": RUNNING[0]}
+    except Exception as e:
+        return {"error": type(e).__name__}
 HOLD_UNTIL = [0.0]
 
 
 def sw_mark(reason):
     now = time.time()
     SW_LOG.append((now, reason))
+    T.evt("switch", reason)
+    T.incident("switch", why=str(reason)[:80], **_inc_state())
     if sum(1 for t, _ in SW_LOG if now - t < FLAP_WIN) >= FLAP_N:
         HOLD_UNTIL[0] = now + FLAP_HOLD
         say("جابه‌جایی‌های پشت‌سرهم دیده شد؛ برای پایداری تماس‌ها، ۱۵ دقیقه جابه‌جایی اختیاری متوقف شد (قطعیِ واقعی همچنان رسیدگی می‌شه).")
@@ -908,7 +976,8 @@ def _failover(gen, profile, sysproxy, mode):
         bad[(c["host"], c["port"])] = time.time() + 600  # تا ۱۰ دقیقه برنمی‌گرده سراغش
     rest = standby_ok()
     fresh = time.time() - 90
-    rest.sort(key=lambda c: (not sites_ok(c), call_key(c) if CALL[0] else (), flaky(c), c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
+    rest.sort(key=lambda c: (not sites_ok(c), call_key(c) if CALL[0] else (), flaky(c), -((c.get("kbps_up") or 0) // 250) if CUR[0] == "upload" else 0,
+                             c.get("verified_at", 0) < fresh, -(c.get("success") or 0), eff(c)))
     tried = set()
     for _ in range(3):  # مسیر سریع: جایگزینی که همین چند ثانیه‌ی پیش کاملاً سالم بوده؛ سلامتش بعد از اتصال دوباره با ترافیک واقعی چک می‌شه
         if GEN[0] != gen or STOP.is_set():
@@ -1307,6 +1376,96 @@ def eff_mode(m):
     return "stable" if (CALL[0] and m == "fast") else m
 
 
+try:
+    import resource  # فقط لینوکس/اندروید
+except ImportError:
+    resource = None
+
+
+class LoadGuard:
+    """ترمز فشار CPU بدون نیاز به سنسور دما: گرمای گوشی از CPUِ پیوسته میاد، پس خودِ CPU اندازه گرفته می‌شه (سنسور دما دیر جواب می‌ده و
+    روی بعضی گوشی‌ها اصلاً نیست). هر ~۳ ثانیه (فقط وقتی جستجو در جریانه) دو چیز اندازه‌گیری می‌شه:
+      lag:  دیرکردِ یک sleep کوتاه توی همین پردازه. بالا = پردازه خفه شده؛ تست‌ها دیر جواب می‌گیرن و «کندی» به‌حساب «خراب‌بودن سرور» میاد
+      duty: سهم CPUِ مصرفی (این پردازه + xrayهای تمام‌شده) از کل هسته‌ها
+    ضریب f (بین MIN و ۱) با قانون AIMD عوض می‌شه: کم‌کردنِ سریع، زیادکردنِ آروم؛ و روی تعداد تست هم‌زمان و نرخ شروع اعمال می‌شه.
+    سقف‌ها (DUTY) حدسیِ محافظه‌کارانه‌ان و باید با گزارش واقعیِ گوشی تنظیم بشن. فقط اندروید؛ جای دیگه ضریب همیشه ۱ است."""
+    MIN, LAG_HI, LAG_LO, EVERY = 0.3, 0.30, 0.10, 3.0
+    DUTY = {"gentle": 0.15, "normal": 0.25, "fast": 0.35, "turbo": 0.45}  # سهم مجاز از کل هسته‌ها، به‌ازای سرعت اسکن
+
+    def __init__(self):
+        self.f, self.lag, self.duty, self.target = 1.0, None, None, None
+        self.min_f, self.n, self.duty_sum, self.log, self._th = 1.0, 0, 0.0, deque(maxlen=20), None
+
+    def update(self, lag, duty, target):
+        """یک گام کنترل؛ جدا از اندازه‌گیری تا بشه تست کرد."""
+        self.lag = lag if self.lag is None else 0.5 * self.lag + 0.5 * lag
+        self.duty = duty if self.duty is None else 0.5 * self.duty + 0.5 * duty
+        self.target, f = target, self.f
+        if self.lag > self.LAG_HI or self.duty > target * 1.15:
+            f = max(self.MIN, f * 0.75)
+        elif self.lag < self.LAG_LO and self.duty < target:
+            f = min(1.0, f + 0.08)
+        if abs(f - self.f) > 1e-9:
+            self.log.append([round(time.time() % 100000), round(f, 2), round(self.lag, 3), round(self.duty, 3)])
+        self.f = f
+        self.min_f = min(self.min_f, f)
+        self.n += 1
+        self.duty_sum += self.duty
+
+    def apply(self, p, speed):
+        self._start()
+        if self.f >= 0.999:
+            return p
+        p = dict(p)
+        p["live"] = max(2, int(round(p["live"] * self.f)))
+        p["rate"] = max(3, p["rate"] * self.f)
+        return p
+
+    def snapshot(self):
+        r = lambda x, n: None if x is None else round(x, n)
+        return {"on": self._th is not None, "f": round(self.f, 2), "min_f": round(self.min_f, 2), "lag_s": r(self.lag, 3), "duty": r(self.duty, 3),
+                "target": self.target, "avg_duty": round(self.duty_sum / self.n, 3) if self.n else None, "steps": self.n, "log": list(self.log)}
+
+    def _start(self):
+        if self._th is not None or resource is None or not os.environ.get("CFG_ANDROID") or os.environ.get("CFG_LOADGUARD") == "0":
+            return
+        if load_settings().get("autores") is False:
+            return
+        self._th = threading.Thread(target=self._loop, daemon=True)
+        self._th.start()
+
+    @staticmethod
+    def _cpu():
+        a, b = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+        return a.ru_utime + a.ru_stime + b.ru_utime + b.ru_stime
+
+    def _loop(self):
+        cores = max(1, os.cpu_count() or 1)
+        prev, t_prev = self._cpu(), time.time()
+        while True:
+            try:
+                if not RUNNING[0]:  # جستجو نیست: آروم به حالت عادی برگرد و بیکار بمون
+                    self.f = min(1.0, self.f + 0.1)
+                    time.sleep(2.0)
+                    prev, t_prev = self._cpu(), time.time()
+                    continue
+                lags = []
+                for _ in range(5):
+                    t = time.time()
+                    time.sleep(0.1)
+                    lags.append(max(0.0, time.time() - t - 0.1))
+                time.sleep(max(0.0, self.EVERY - 0.5))
+                now, cpu = time.time(), self._cpu()
+                duty = (cpu - prev) / max(0.1, (now - t_prev) * cores)
+                prev, t_prev = cpu, now
+                self.update(sum(lags) / len(lags), duty, self.DUTY.get(eff_speed(), 0.25))
+            except Exception:
+                time.sleep(5.0)
+
+
+LOAD = LoadGuard()
+
+
 def speed_params():
     p = dict(SPEEDS[eff_speed()])
     if _ev:  # تعداد تست هم‌زمان خودکار کم و زیاد می‌شه؛ نرخ ارسال (rate) دست‌نخورده می‌مونه
@@ -1315,6 +1474,7 @@ def speed_params():
         p["live"], p["workers"] = min(p["live"], 12), min(p["workers"], 64)
         if cfgres is not None and os.environ.get("CFG_RES") != "0" and load_settings().get("autores") is not False:
             p = cfgres.GOV.apply(p)  # بر اساس رم/دما/باتری گوشی؛ بدون داده‌ی جاوا همین p می‌مونه
+        p = LOAD.apply(p, eff_speed())  # ترمز CPU (مستقل از سنسورها): اگه پردازه خفه شده یا CPU از سقف رد شده، کمتر و آروم‌تر تست می‌کنه
     return p
 
 
@@ -1433,6 +1593,8 @@ def supervisor(gen, profile, sysproxy, mode):
             continue
         okr = [h for h in hist if h]
         lk = link_state(hist, fails)
+        if lk != S.get("link"):
+            T.evt("link", f"وضع لینک: {S.get('link')} ← {lk} (خطای پشت‌سرهم {fails}، پاسخ {len(okr)}/{len(hist)})")
         S["link"] = lk
         if lk in ("jittery", "lossy") and not S.get("warn"):
             S["warn"] = "نوسان" if lk == "jittery" else "افت"
@@ -1455,6 +1617,9 @@ def supervisor(gen, profile, sysproxy, mode):
         if (dead or fails >= FAILN or soft or cut_now) and RUNNING[0] and not POOL["standby"]:
             continue  # هنوز جستجوی اول در حال اجراست و جایگزینی نداریم؛ چند لحظه‌ی دیگه دوباره
         if dead or fails >= FAILN or soft or cut_now:
+            why_fo = "هسته مرده" if dead else "قطع کامل تأییدشده" if cut_now else "نوسان/افت طولانی" if soft else f"{fails} خطای پشت‌سرهم"
+            T.evt("failover", f"شروع جابه‌جایی خودکار: {why_fo}")
+            T.incident("failover", why=why_fo, fails=fails, ok=f"{len(okr)}/{len(hist)}", **_inc_state())
             failover(gen, profile, sysproxy, mode)
             hist.clear()
             fails, t_switch = 0, time.time()
@@ -1767,9 +1932,13 @@ def learn_score(c, alive_only=False):
     return (sum(ar) / len(ar)) * (sum(sr) / len(sr)) * (1 - min(0.9, risk * 2))  # الگوی بارها خطرناک‌شده امتیازش پایین میاد
 
 
-def src_score(url):
-    """چقدر این منبع «کانفیگ خوب» می‌ده (۰ تا ~۱): احتمال زنده بودن × احتمال باز کردن سایت‌ها، از تجربه‌ی همین شبکه روی تجربه‌ی کلی.
-    منبعی که کم تست شده یه امتیاز کنجکاوی کوچیک می‌گیره تا منبع تازه هم شانس بگیره، ولی منبع ثابت‌شده‌ی خوب همیشه جلوتره."""
+def _mkey(c):
+    """کلید «روش» کانفیگ، هم‌شکل با جدول روش‌های گزارش (پروتکل/انتقال/امنیت)."""
+    return f"{c.get('proto')}/{c.get('network')}/{c.get('security')}"
+
+
+def _src_prior(url):
+    """(احتمال زنده‌بودن، احتمال باز کردن سایت‌ها، تعداد تست) این منبع؛ از تجربه‌ی همین شبکه روی تجربه‌ی کلی."""
     k = _uk(url) if url else ""
     v = LEARN["f"].get(k) if k else None
     ga = (v[1] + 1) / (v[0] + 4) if v else LEARN_PRIOR
@@ -1780,12 +1949,66 @@ def src_score(url):
     if lv:
         d = _decayed(lv, k, time.time())
         ga, gs, n = (d[1] + LEARN_M * ga) / (d[0] + LEARN_M), (d[3] + LEARN_M * gs) / (d[2] + LEARN_M), d[0]
+    return ga, gs, n
+
+
+def src_score(url):
+    """چقدر این منبع «کانفیگ خوب» می‌ده (۰ تا ~۱): احتمال زنده بودن × احتمال باز کردن سایت‌ها، از تجربه‌ی همین شبکه روی تجربه‌ی کلی.
+    منبعی که کم تست شده یه امتیاز کنجکاوی کوچیک می‌گیره تا منبع تازه هم شانس بگیره، ولی منبع ثابت‌شده‌ی خوب همیشه جلوتره."""
+    ga, gs, n = _src_prior(url)
     return ga * gs + 0.12 / (1.0 + n) ** 0.5
 
 
-def src_interleave(items):
+LINKS_CAP = 9000  # سقف کانفیگ‌هایی که یک جستجو نگه می‌داره (حافظه و کش)
+
+
+def balance_links(links, origin, cap=LINKS_CAP):
+    """وقتی کانفیگ‌ها از سقف بیشترن، به‌جای بریدن تصادفیِ کل لیست (که منبع کوچیکِ خوب رو هم تا ~۷۰٪ می‌ریخت دور)، هر منبع یه سهم کف
+    داره و بقیه‌ی ظرفیت به نسبت امتیاز منبع (src_score) پخش می‌شه. منبعی که از سهمش کوچیک‌تره کامل می‌مونه. ترتیب خروجی تصادفیه."""
+    links = list(links)
+    if len(links) <= cap:
+        random.shuffle(links)
+        return links
+    groups = {}
+    for l in links:
+        groups.setdefault(origin.get(l, ""), []).append(l)
+    for g in groups.values():
+        random.shuffle(g)
+    floor = cap // (4 * len(groups))
+    take = {u: min(len(g), floor) for u, g in groups.items()}
+    left = cap - sum(take.values())
+    w = {u: max(0.02, src_score(u)) for u in groups}
+    active = {u for u, g in groups.items() if len(g) > take[u]}
+    while left > 0 and active:
+        tw = sum(w[u] for u in active)
+        full = [u for u in active if len(groups[u]) - take[u] <= left * w[u] / tw]
+        if full:  # این منبع‌ها از سهمشون کوچیک‌ترن: کامل می‌شن و ظرفیتِ مونده بین بقیه پخش می‌شه
+            for u in full:
+                left -= len(groups[u]) - take[u]
+                take[u] = len(groups[u])
+                active.discard(u)
+            continue
+        base = {u: int(left * w[u] / tw) for u in active}
+        for u, b in base.items():
+            take[u] += b
+        left -= sum(base.values())
+        for u in sorted(active, key=lambda u: -w[u]):  # باقی‌مانده‌ی گرد کردن
+            if left <= 0:
+                break
+            take[u] += 1
+            left -= 1
+        break
+    out = []
+    for u, g in groups.items():
+        out.extend(g[:take[u]])
+    random.shuffle(out)
+    return out
+
+
+def src_interleave(items, adj=None):
     """ترتیب تست: منبع‌های خوب سهم بیشتری از «اول صف» می‌گیرن، ولی هیچ منبعی کامل کنار گذاشته نمی‌شه.
-    (ترتیب داخل هر منبع همون ترتیب قبلیه.) بدون این، منبع‌های غول‌پیکر منبع‌های کوچیکِ خوب رو پشت خودشون گم می‌کردن."""
+    (ترتیب داخل هر منبع همون ترتیب قبلیه.) بدون این، منبع‌های غول‌پیکر منبع‌های کوچیکِ خوب رو پشت خودشون گم می‌کردن.
+    adj(url): ضریب زنده از نتیجه‌ی همین اجرا (منبعی که همین الان سالم می‌ده >۱، منبعی که ده‌ها تست بی‌نتیجه داشته <۱)."""
     groups = {}
     for c in items:
         groups.setdefault(c.get("srcurl", ""), []).append(c)
@@ -1793,7 +2016,7 @@ def src_interleave(items):
         return list(items)
     keyed = []
     for gi, (u, g) in enumerate(groups.items()):
-        w = max(0.008, src_score(u))
+        w = max(0.008, src_score(u) * (adj(u) if adj else 1.0))
         for i, c in enumerate(g):
             keyed.append(((i + 0.5) / w, gi, i, c))
     keyed.sort(key=lambda x: x[:3])
@@ -2184,6 +2407,8 @@ def sites_watch(gen, profile, found):
             POOL["sites"] = r
             if sites_ok({"sites": r}):
                 continue
+            T.evt("sites", f"چک دوره‌ای: {_closed(r)} از سرور فعلی باز نشد")
+            T.incident("sites_closed", closed=_closed(r), **_inc_state())
             if not calm_ok():
                 continue  # تازه جابه‌جا شده‌ایم یا در حالت نوسان‌گیریم؛ سرور کار می‌کنه، تماس رو قطع نکن
             bad_n = 1
@@ -2397,7 +2622,7 @@ def startup_refresh():
             PREFETCH.update(links=links, stats=stats, t=time.time(), origin=org)
             if len(links) >= 50:
                 try:
-                    write_secret(DATA / "cache.txt", "\n".join(links[:9000]))
+                    write_secret(DATA / "cache.txt", "\n".join(balance_links(links, org)))
                 except OSError:
                     pass
             say(f"منابع به‌روز شد: {len(links)} کانفیگ تازه.")
@@ -2418,14 +2643,76 @@ def daily_refresh():
         update_block(True)
 
 
+LASTARGS = [None]  # (profile, sysproxy, mode) آخرین اجرا؛ برای شروع دوباره‌ی جستجو بعد از عوض شدن شبکه
+
+
+def _netid(asn, kd):
+    """شناسه‌ی شبکه برای یادگیری جدا: اپراتور + نوع اتصال. اگه هیچ‌کدوم مشخص نبود خالیه (یعنی یادگیریِ جدا نداریم)."""
+    return "a:" + hashlib.sha256(((asn or "") + "|" + (kd or "")).encode()).hexdigest()[:10] if (asn or kd) else ""
+
+
+def reprobe_net():
+    """سنجش دوباره‌ی شبکه‌ی فعلی (بعد از عوض شدن شبکه)، بدون دست زدن به اتصال."""
+    try:
+        if netprobe is None or os.environ.get("CFG_NETPROBE") == "0" or load_settings().get("netprobe") is False:
+            return
+        kd = netprobe.net_kind()
+        r = netprobe.probe(STOP.is_set)
+        if isinstance(r, dict):
+            r["kind"] = kd
+        NETP["shown"] = r
+        if r and r.get("net_ok"):
+            NETP["net"] = r
+            NETID[0] = _netid(r.get("asn"), kd)
+            say("شبکه عوض شد. " + netprobe.summary_fa(r))
+    except Exception:
+        pass
+
+
+def net_watch():
+    """هر ۱۵ ثانیه بدون ترافیک چک می‌کنه نوع شبکه (مودم ↔ نت همراه ↔ هات‌اسپات) عوض شده یا نه. دو بار پشت‌سرهم عوض‌شده دیده بشه یعنی واقعاً عوض شده:
+    سنجش و شناسه‌ی شبکه کنار گذاشته می‌شه؛ اگه سرور فعلی روی شبکه‌ی تازه جواب نمی‌ده جستجو دوباره شروع می‌شه."""
+    bad = 0
+    while True:
+        time.sleep(15)
+        try:
+            if netprobe is None:
+                continue
+            cur = netprobe.net_kind()
+            base = (NETP.get("net") or {}).get("kind")
+            if not cur or not base or cur == base:
+                bad = 0
+                continue
+            bad += 1
+            if bad < 2:
+                continue
+            bad = 0
+            T.evt("net_change", f"نوع شبکه عوض شد: {base} ← {cur}")
+            T.incident("net_change", was=base, now=cur, **_inc_state())
+            NETP["net"], NETID[0] = None, ""
+            if S.get("stage") == "connected" and not RUNNING[0] and LASTARGS[0] and not probe(3.0):
+                S["note"] = "شبکه عوض شد و سرور فعلی روی این شبکه جواب نمی‌ده؛ دوباره جستجو می‌کنم ..."
+                prof, sysproxy, mode = LASTARGS[0]
+                threading.Thread(target=pipeline, args=(prof, True, sysproxy, mode, True), daemon=True).start()
+                continue
+            reprobe_net()
+        except Exception:
+            pass
+
+
 def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1, cycle=0):
     mode = failover_on if failover_on in ("stable", "fast", "off") else ("stable" if failover_on else "off")
     failover_on = mode != "off"
+    LASTARGS[0] = (profile, sysproxy, mode)
     held = [False]
     pend = []  # نتیجه‌ی تست‌ها برای ثبت در حافظه‌ی «بد»، آخر اسکن
     RUNNING[0] += 1
     try:
         STOP.clear()
+        cfgscan.REACH_CACHE.clear()
+        AVF[0], lbn = 1.0, [0, 0]  # lbn: [بسته‌شده توسط دستگاه، کل تلاش‌های اتصال]
+        T.run_begin(level=level, cycle=cycle, quick=bool(quick), profile=profile, speed=eff_speed(), auto=bool(auto), call=bool(CALL[0]))
+        T.evt("search", f"شروع جستجو: مرحله {level}، دور {cycle}، {'سریع' if quick else 'کامل'}، سرعت {eff_speed()}، حالت {profile}")
         disconnect(silent=True, keep_proxy=auto)
         GEN[0] += 1
         if level == 1 and cycle == 0:
@@ -2442,7 +2729,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         P = cfgforge.PROFILES[profile]
         CUR[0] = profile
         target, up_cap, hard_cap = (14, 90, 360) if quick else (24, 240, 900)
-        if profile == "speed":  # برای پیدا کردن سرور واقعاً سریع، نمونه‌ی بیشتری لازمه
+        if profile in SPEEDLIKE:  # برای پیدا کردن سرور واقعاً سریع، نمونه‌ی بیشتری لازمه
             target, up_cap = max(target, 24), max(up_cap, 150)
         tmo = [2.5, 5] if level == 1 else [4, 9]
         if level >= 2:
@@ -2451,8 +2738,9 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         sp = speed_params()
         q, sem, lock, pend, blk = queue.Queue(), DynLimit(lambda: speed_params()["live"]), threading.Lock(), [0], [0]
         skip = {"unsupported": 0, "insecure": 0}
+        todo, todo_lock, mst, sst, picks = [], threading.Lock(), {}, {}, [0]  # صف زنده: هر تست وقتی نوبتش شد «بهترینِ فعلی» رو برمی‌داره (نه ترتیبِ اولِ جستجو)
         DIAG.update(tested=0, ok=0, no_reach=0, no_traffic=0, unsafe=0, skip=skip)
-        pace = Pace(lambda: speed_params()["rate"] * (1 if level == 1 else 2))
+        pace = Pace(lambda: speed_params()["rate"] * (1 if level == 1 else 2) * AVF[0])
         ex = ThreadPoolExecutor(max_workers=sp["workers"])
         found, connected, fails, t0, t_first = [], [False], [0], time.time(), [None]
         fetch_done = threading.Event()
@@ -2466,17 +2754,21 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             try:
                 if netprobe is None or os.environ.get("CFG_NETPROBE") == "0" or load_settings().get("netprobe") is False:
                     return
+                try:  # نوع اتصال (مودم / نت همراه / هات‌اسپات)؛ سنجشِ یک شبکه هیچ‌وقت برای شبکه‌ی دیگه استفاده نمی‌شه
+                    kd = netprobe.net_kind()
+                except Exception:
+                    kd = ""
                 old = NETP["net"]
-                r = old if (old and level == 1 and time.time() - old["t"] < 120) else netprobe.probe(STOP.is_set)
+                same = bool(old) and (old.get("kind", "") == kd)
+                r = old if (same and level == 1 and time.time() - old["t"] < 120) else netprobe.probe(STOP.is_set)
+                if isinstance(r, dict):
+                    r["kind"] = kd
                 NETP["shown"] = r
                 if not r or not r.get("net_ok"):
                     return
                 NETP["net"], net[0] = r, r
-                try:  # نوع اتصال (مودم / نت همراه / هات‌اسپات) هم توی شناسه می‌ره؛ مودم و سیم‌کارتِ یک اپراتور قاطی نشن
-                    kd = netprobe.net_kind()
-                except Exception:
-                    kd = ""
-                NETID[0] = "a:" + hashlib.sha256(((r.get("asn") or "") + "|" + kd).encode()).hexdigest()[:10] if (r.get("asn") or kd) else ""
+                NETID[0] = _netid(r.get("asn"), kd)
+                T.run_mark("net_probe", net=kd or "?", probe_s=r.get("dur"))
                 sc = netprobe.timeout_scale(r)
                 if sc > 1:
                     tmo[0], tmo[1] = min(tmo[0] * sc, 9), min(tmo[1] * sc, 18)
@@ -2496,26 +2788,56 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             try:
                 if STOP.is_set():
                     return
+                ta = time.time()
                 pace.wait()
+                tb = time.time()
+                T.perf("pace_wait_s", tb - ta)  # انتظار برای سقف نرخ اتصال
                 cfgscan.reach(c, tmo[0])
+                T.perf("reach_s", time.time() - tb)  # DNS + اتصال TCP
+                lbn[1] += 1
+                if "local_block" in c["flags"]:  # آنتی‌ویروس/فایروالِ همین دستگاه بست: نه خرابیِ سرور، نه موضوع یادگیری/قرنطینه
+                    lbn[0] += 1
+                    DIAG["local_block"] = lbn[0]
+                    c["tested"], c["alive"] = False, False
+                    if lbn[0] in (5, 25, 100):
+                        _av_note(lbn)
+                    return
                 if "blocklisted" in c["flags"]:
                     blk[0] += 1
                     S["blocked"] = blk[0]
                 if not c.get("reachable") or "private_addr" in c["flags"]:
                     c["tested"], c["alive"] = True, False
                     return
+                T.run_mark("first_reach")
+                tc = time.time()
                 with sem:
+                    td = time.time()
+                    T.perf("slot_wait_s", td - tc)  # انتظار برای یکی از جای‌های «تست هم‌زمان» (گلوگاهِ واقعیِ سرعت)
                     if STOP.is_set():
                         return
                     try:
                         cfgscan.live(c, xray, 1, tmo[1])
-                    except Exception:
+                    except Exception as e:
                         c["alive"] = False
+                        c["fail"] = "exception"
+                        T.err("live", e)
+                    T.perf("live_ok_s" if c.get("alive") else "live_dead_s", time.time() - td)  # یک تست زنده (xray + درخواست) چقدر طول کشید
                     if level >= 2 and not c.get("alive") and c["security"] in ("tls", "reality") and not STOP.is_set():
                         try_variants(c, xray, tmo[1])
                 c["tested"] = True
             finally:
                 if c.get("tested"):
+                    if c.get("alive"):
+                        T.run_mark("first_alive")
+                    T.count("test_total")
+                    T.count("why:" + ("ok" if c.get("alive") else c.get("fail") or ("no_reach" if not c.get("reachable") else "unknown")))
+                    m = mst.setdefault(_mkey(c), [0, 0])
+                    m[0] += 1
+                    m[1] += 1 if c.get("alive") else 0
+                    if c.get("src") == "net":  # نتیجه‌ی زنده‌ی هر «منبع» در همین اجرا (برای سهم‌دهیِ دوباره‌ی منبع‌ها)
+                        sm = sst.setdefault(c.get("srcurl", ""), [0, 0])
+                        sm[0] += 1
+                        sm[1] += 1 if c.get("alive") else 0
                     DIAG["tested"] += 1
                     DIAG["no_reach" if not c.get("reachable") else "unsafe" if danger(c) else "ok" if c.get("alive") else "no_traffic"] += 1
                 if c.get("tested") and not clock[0]:  # ساعت غلط = نتیجه‌ی تست قابل‌اعتماد نیست؛ چیزی یاد گرفته/قرنطینه نشه
@@ -2524,6 +2846,50 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     # نباید سرورهای سالم رو قرنطینه کنه.
                     pend.append((c, "danger" if danger(c) else "ok" if c.get("alive") else "dead"))
                 q.put(c)
+
+        def _rank(c):
+            return {"custom": 0, "good": 1, "cache": 3, "snap": 3}.get(c.get("src"), 2)
+
+        def _resort():
+            """هر چند تست، باقی‌مانده‌ی صف دوباره مرتب می‌شه. روشی که توی همین اجرا و همین شبکه ده‌ها بار تست شده و هیچ سالمی نداده عقب می‌ره (حذف نمی‌شه)،
+            روشی که خوب جواب داده جلو می‌آد. بدون این، ترتیبِ اولِ جستجو تا آخر ثابت می‌موند، حتی وقتی معلوم شده بود نصف صف بی‌فایده‌ست."""
+            tot, ok = sum(v[0] for v in mst.values()), sum(v[1] for v in mst.values())
+            base = (ok + 0.3) / (tot + 3)
+            nt = net[0]
+
+            def adj(c):
+                m = mst.get(_mkey(c))
+                if not m or m[0] < 30:
+                    return 1.0
+                r = min(6.0, max(0.05, ((m[1] + 0.3) / (m[0] + 3)) / base))
+                return 1.0 + (r - 1.0) * min(1.0, m[0] / 60.0)
+            stot, sok = sum(v[0] for v in sst.values()), sum(v[1] for v in sst.values())
+            sbase = (sok + 0.3) / (stot + 3)
+
+            def sadj(u):
+                """ضریب زنده‌ی منبع: نرخ سالمِ همین منبع در همین اجرا نسبت به میانگین همه (با شِرینکیج؛ تا ۲۰ تست اثری نداره)."""
+                m = sst.get(u)
+                if not m or m[0] < 20:
+                    return 1.0
+                r = min(8.0, max(0.1, ((m[1] + 0.3) / (m[0] + 3)) / sbase))
+                return 1.0 + (r - 1.0) * min(1.0, m[0] / 80.0)
+            items = list(todo)
+            items.sort(key=lambda c: (_rank(c), "no_tls" in c["flags"], netprobe.priority(c, nt) if nt else 0,
+                                      -learn_score(c) * adj(c) * random.uniform(0.75, 1.25)))
+            todo[:] = [c for c in items if _rank(c) < 2] + src_interleave([c for c in items if _rank(c) == 2], sadj) + [c for c in items if _rank(c) > 2]
+
+        def ticket():
+            with todo_lock:
+                if not todo:
+                    return
+                picks[0] += 1
+                if picks[0] % 60 == 1 and len(todo) > 1:
+                    try:
+                        _resort()
+                    except Exception:
+                        pass
+                c = todo.pop(0)
+            work(c)
 
         add_lock, old_lock, old_added, ended = threading.Lock(), threading.Lock(), [False], [False]
 
@@ -2582,8 +2948,10 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     return
                 with lock:
                     pend[0] += 1
+                with todo_lock:
+                    todo.append(c)
                 try:
-                    ex.submit(work, c)
+                    ex.submit(ticket)
                 except RuntimeError:  # جستجو همین الان تموم شد
                     return
 
@@ -2633,10 +3001,10 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 if stats and stats is not PREFETCH["stats"]:
                     record_fetch(stats, len(links))
                 if links:
-                    random.shuffle(links)
+                    links = balance_links(links, origin)  # بریدن به سقف بدون ریختن منبع‌های کوچیکِ خوب؛ ترتیب خروجی تصادفی
                     if len(links) >= 50:
                         try:
-                            write_secret(DATA / "cache.txt", "\n".join(links[:9000]))
+                            write_secret(DATA / "cache.txt", "\n".join(links))
                         except OSError:
                             pass
                 else:
@@ -2646,13 +3014,14 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     except OSError:
                         old = "فقط بسته‌ی همراه برنامه (قدیمی) موجوده"
                     say(f"هیچ لیستی دانلود نشد. از لیست ذخیره‌شده استفاده می‌شه؛ {old} و ممکنه خیلی از کانفیگ‌هاش مرده باشن.")
-                add(links[:9000], "net")
+                add(links, "net")
             except Exception as e:
                 say(f"خطا در دانلود لیست‌ها: {type(e).__name__}")
             finally:
                 try:
                     add_old()
                 finally:
+                    T.run_mark("fetch_done", links=fst["n"])
                     fetch_done.set()
 
         threading.Thread(target=fetcher, daemon=True).start()
@@ -2667,20 +3036,21 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             «حالت اضطراری»: فقط تلگرام). هیچ‌وقت به کمتر راضی نمی‌شه؛ اگه سروری پیدا نشده خالی برمی‌گرده و جستجو ادامه داره.
             حالت «سرعت»: بین همین‌ها سریع‌ترین."""
             pool = sites_pick(found, site_cache)
-            if profile == "speed" and len(pool) > 1:
-                S.update(step=4, msg=f"در حال سنجش سرعت {len(pool)} سرور سالم ...")
+            if profile in SPEEDLIKE and len(pool) > 1:
+                S.update(step=4, msg=f"در حال سنجش سرعت {'آپلود' if profile == 'upload' else ''} {len(pool)} سرور سالم ...")
                 ver = check_many(pool, 1, 5, 3, speed=True, secs=2.0)  # هم‌زمانی کم تا اندازه‌گیری‌ها قابل مقایسه بمونن
                 okc = sorted([r for r in ver if r.get("alive") and not danger(r)], key=rk)
-                kb = {r["raw"]: r.get("kbps") for r in okc}
+                fld = "kbps_up" if profile == "upload" else "kbps"
+                kb = {r["raw"]: r.get(fld) for r in okc}
                 for c in found:  # سرعت اندازه‌گیری‌شده برای مرحله‌های بعد هم بمونه
                     if kb.get(c["raw"]):
-                        c["kbps"] = kb[c["raw"]]
+                        c[fld] = kb[c["raw"]]
                 if okc:
                     return okc
             return pool[:1]
 
         def ready_first():
-            if profile != "speed":
+            if profile not in SPEEDLIKE:
                 return True
             if conn["t_first"] is None:
                 return False
@@ -2698,7 +3068,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         for c in list(found)) or any(r.get("alive") and sites_ok(r) for r in list(site_cache.values()))):
                 return  # چیز تازه‌ای برای تست نیست و سرور قابل‌قبولی هم نداریم؛ پیام صفحه الکی عوض نشه
             conn["busy"] = True
-            S.update(step=4, msg=("در حال انتخاب سریع‌ترین سرور ..." if profile == "speed"
+            S.update(step=4, msg=("در حال انتخاب سریع‌ترین سرور ..." if profile in SPEEDLIKE
                                   else "سرور سالم پیدا شد؛ در حال بررسی یوتیوب، اینستاگرام و تلگرام ..."))
 
             def run():
@@ -2740,6 +3110,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 if c["raw"] in okset:
                     c["sites"] = site_cache[c["raw"]]["sites"]
             connected[0], t_first[0] = True, time.time()
+            T.run_mark("connected", tested=DIAG.get("tested"), alive=len(found))
+            T.evt("connected", f"وصل شد: {sel[0]['proto']}/{sel[0]['network']}/{sel[0]['security']} پینگ {ms}ms")
             save_good(sel)
             S.update(stage="connected", pct=100, msg="وصل شدی ✓", connected=dict(
                 ip=ip, ms=ms, n=len(sel), warn=describe(sel[0])["warn"], leak=leak, real_ip=real,
@@ -2804,6 +3176,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             maybe_connect(force=True)  # جستجو تموم شد ولی هنوز وصل نشدیم
         while conn["busy"] and not STOP.is_set():
             time.sleep(0.2)
+        T.run_end(why or ("cancel" if STOP.is_set() else ""), tested=finished, alive=len(found), pend=pend[0], connected=bool(connected[0]))
         if why and not STOP.is_set():
             say("پایان جستجو: " + why)
         if STOP.is_set():
@@ -2833,6 +3206,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         if not clock[0]:
             _commit_bad(pend)
         bad_save(True)
+        save_localblock()
         prune_sources()
         for c in found:
             for s in db["sources"]:
@@ -2881,8 +3255,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                                    + (" یا «حالت اضطراری: فقط تلگرام» رو روشن کن." if tr["tg"] else "."))
             raise RuntimeError(f"{len(found)} سرور سالم پیدا شد ولی اتصال نهایی برقرار نشد. دوباره امتحان کن.")
         # اولین سرورِ وصل‌شده فقط «موقتی»ه؛ همه‌ی سرورهای سالم با تست آروم و چندنمونه‌ای دوباره و منصفانه سنجیده می‌شن
-        if profile == "speed":  # سرور با سرعتِ اندازه‌گیری‌شده‌ی بیشتر اول؛ بعد ناشناخته‌ها با پینگ
-            ranked = sorted(found, key=lambda c: (0 if c.get("kbps") else 1, -(c.get("kbps") or 0), ping_key(c)))
+        if profile in SPEEDLIKE:  # سرور با سرعتِ اندازه‌گیری‌شده‌ی بیشتر اول؛ بعد ناشناخته‌ها با پینگ
+            ranked = sorted(found, key=lambda c: (0 if spd(c, profile) else 1, -(spd(c, profile) or 0), ping_key(c)))
         else:
             ranked = sorted(found, key=ping_key)
         cur = list(POOL["active"])
@@ -2891,14 +3265,14 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             held[0] = True
             S["note"] = "در حال بررسی دقیق سرورها ..."
             others = [c for c in ranked if c["raw"] != cur[0]["raw"]]
-            nfix = 12 if profile == "speed" else 8
+            nfix = 12 if profile in SPEEDLIKE else 8
             def known_bad(c):  # همین چند دقیقه‌ی پیش تست سایت شده و رد شده؛ دوباره وقت صرفش نمی‌کنیم
                 r = site_cache.get(c["raw"])
                 return bool(r and time.time() - r.get("site_t", 0) < SITE_FRESH and not sites_ok(r))
             others = [c for c in others if not known_bad(c)]
             top = others[:nfix] + random.sample(others[nfix:], min(4, len(others[nfix:]))) + [cur[0]]
             # sites=True: قبلاً این مرحله فقط تأخیر/سرعت می‌سنجید و می‌تونست از سروری که یوتیوب رو باز می‌کرد به سرور سریع‌ترِ بی‌یوتیوب بپره
-            if profile == "speed":  # هم‌زمانی کم و نمونه‌ی بلندتر: مقایسه‌ی منصفانه‌ی سرعت
+            if profile in SPEEDLIKE:  # هم‌زمانی کم و نمونه‌ی بلندتر: مقایسه‌ی منصفانه‌ی سرعت
                 ver = check_many(top, ROUNDS.get(profile, 3), 5, 2, speed=True, secs=3.0, sites=True)
             else:
                 ver = check_many(top, ROUNDS.get(profile, 3), 5, 4, speed=True, secs=2.0, sites=True)
@@ -2946,6 +3320,9 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
     except Exception as e:
         disconnect(silent=True)
         S.update(stage="error", msg=str(e))
+        T.err("pipeline", e)
+        T.run_end("error: " + str(e)[:100])
+        T.incident("pipeline_error", **_inc_state())
     finally:
         RUNNING[0] -= 1
         if held[0]:
@@ -3024,7 +3401,7 @@ MAX_BODY = 8_000_000  # بزرگ‌ترین بدنه‌ی POST (افزودن د�
 
 def _cfg_row(c):
     """فقط ویژگی‌های بی‌خطر یک کانفیگ؛ آدرس، شناسه و نام هرگز."""
-    return {k: c.get(k) for k in ("proto", "network", "security", "port", "ms", "kbps", "src", "alive", "reachable", "flow", "fp", "alpn", "scy", "frag", "mode", "insecure") if k in c}
+    return {k: c.get(k) for k in ("proto", "network", "security", "port", "ms", "kbps", "kbps_up", "src", "alive", "reachable", "flow", "fp", "alpn", "scy", "frag", "mode", "insecure") if k in c}
 
 
 def _res_snapshot():
@@ -3079,8 +3456,16 @@ def evolve_ctx():
     pool = {"switches": POOL.get("switches", 0), "active": [_cfg_row(c) for c in POOL.get("active", [])[:10] if isinstance(c, dict)],
             "standby": [_cfg_row(c) for c in POOL.get("standby", [])[:30] if isinstance(c, dict)],
             "standby_n": len(POOL.get("standby", [])), "backlog_n": len(POOL.get("backlog", []))}
+    _trace = T.snapshot()
+    try:
+        import cfgtrace as _ct
+        _hints = _ct.hints(_trace, {"loadguard": LOAD.snapshot()})
+    except Exception:
+        _hints = []
     return {"settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct")},
             "resource": _res_snapshot(),
+            "loadguard": LOAD.snapshot(),  # ضریب ترمز CPU، دیرکرد پردازه، سهم CPU (برای تنظیم سقف‌ها از روی گزارش واقعی)
+            "trace": _trace, "hints": _hints,  # خط زمانی رویدادها، خطاهای بلعیده‌شده، زمان‌سنجی، زمان‌بندی جستجوها، لحظه‌های مشکل + خلاصه‌ی خودکار
             "speed_now": SPEED[0], "speed_effective": sp, "speed_table": SPEEDS, "profile_now": CUR[0],
             "flags": {"tgonly": TGONLY[0], "call": CALL[0], "vpn": VPN[0], "vpn_want": VPN_WANT[0], "background": BG[0], "android": bool(ANDROID),
                       "xray_running": bool(XRAY_PROC), "pipeline_alive": bool(PIPE and PIPE.is_alive()), "ports": {"socks": SOCKS, "http": HTTP}},
@@ -3094,7 +3479,9 @@ def evolve_ctx():
             "quarantine": {"total": len(BAD["h"]), "active": sum(1 for v in BAD["h"].values() if v[0] > now), "by_kind": bad_kinds},
             "discovery": {k: DISC.get(k) for k in ("t", "msg", "added", "running")},
             "netprobe": NETP.get("net"), "pool": pool, "sources": srcs[:60],
-            "blocklist_entries": (lambda b: len(b) if hasattr(b, "__len__") else None)(getattr(cfgscan, "BLOCK", None)),
+            "blocklist_entries": (lambda b: {"ips": len(b.ips), "ranges": len(b.starts)} if b is not None and hasattr(b, "ips") else None)(getattr(cfgscan, "BLOCK", None)),
+            "av": {"local_block_saved": len(cfgscan.LOCAL_BLOCK), "pace_factor": AVF[0], "os": os.name,
+                   "run_diag": DIAG.get("local_block", 0)},  # آنتی‌ویروس/فایروالِ دستگاه چند آدرس رو بسته (فقط شمارش؛ آدرس‌ها وارد گزارش نمی‌شن)
             "recent_log": S["log"][-60:]}
 
 
@@ -3630,6 +4017,8 @@ def watchdog():
     while True:
         time.sleep(0.3)  # تند، تا اگه پنجره بدون پرسش قبلی بسته شد، پرسش فوری بیاد
         if XRAY_PROC and XRAY_PROC.poll() is not None and S["stage"] == "connected" and not FAILOVER.is_set():
+            T.evt("core_died", f"هسته‌ی اتصال متوقف شد (کد خروج {XRAY_PROC.returncode})")
+            T.incident("core_died", rc=XRAY_PROC.returncode, **_inc_state())
             XRAY_PROC = None
             restore_proxy()
             S.update(stage="error", msg="هسته‌ی اتصال متوقف شد. دوباره دکمه‌ی اتصال رو بزن.", connected=None)
@@ -3692,6 +4081,7 @@ def main():
         pass
     CUM.update(report.load(STATS_FILE))
     load_block()
+    load_localblock()
     restore_proxy()  # اگه دفعه‌ی قبل ناگهانی بسته شده بود، تنظیم قبلی پروکسی برمی‌گرده
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
     PORT, TOKEN = srv.server_address[1], secrets.token_urlsafe(16)
@@ -3701,6 +4091,7 @@ def main():
     os.chmod(rj, 0o600)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=net_watch, daemon=True).start()
     atexit.register(shutdown)
     S["beat"] = time.time()
     threading.Thread(target=startup_refresh, daemon=True).start()

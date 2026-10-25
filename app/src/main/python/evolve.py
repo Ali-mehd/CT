@@ -21,7 +21,7 @@ CODE_MAX = 4_000_000         # سقف مجموع کد برنامه (فایل‌�
 CAP_DEFAULT, CAP_MIN, CAP_MAX = 20, 5, 100   # مگابایت؛ سقف پوشه‌ی تکامل
 KEEP = 3                     # چند نسخه‌ی پشتیبان نگه داشته بشه
 REPORT_TTL = 30 * 86400      # وصله فقط برای گزارش‌های کمتر از ۳۰ روز قبول می‌شه
-GATE_TIMEOUT, GATE_TOTAL = 150, 600
+GATE_TIMEOUT, GATE_TOTAL = 150, 900  # تست‌ها بیشتر شدن (~۲٫۵ دقیقه روی کامپیوتر تند)؛ روی کامپیوتر کند ۶۰۰ ثانیه کم بود و وصله‌ی سالم هم رد می‌شد
 APP_RE = re.compile(r"^app/[A-Za-z0-9_\-]{1,40}\.(py|html|txt)$")
 TEST_RE = re.compile(r"^tests/t[A-Za-z0-9_\-]{1,40}\.py$")
 PROTECTED = {"app/evolve.py"}
@@ -344,7 +344,9 @@ def _metrics(ctx):
          "top_fails": sorted(fails.items(), key=lambda kv: -(kv[1] if isinstance(kv[1], (int, float)) else 0))[:5]}
     srcs = ctx.get("sources") or []
     m["sources_total"] = len(srcs)
-    m["sources_weak"] = [s.get("url") for s in srcs if isinstance(s, dict) and s.get("on") and (s.get("yield") or 1) < 0.01][:10]
+    # کلید برچسبِ منبع «src» است (نه «url»)، و yield=0 یعنی بدترین منبع، نه «نامعلوم» (قبلاً «or 1» صفر رو سالم حساب می‌کرد و برچسب هم خالی می‌اومد)
+    m["sources_weak"] = [s.get("src") or s.get("url") for s in srcs if isinstance(s, dict) and s.get("on")
+                         and isinstance(s.get("yield"), (int, float)) and s["yield"] < 0.01][:10]
     return m
 
 
