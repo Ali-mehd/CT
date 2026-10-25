@@ -21,6 +21,7 @@ except Exception:
 import cfgscan, cfgforge, report  # noqa: E402
 cfgres = None  # تنظیم منابع فقط در نسخه‌ی اندروید هست
 import cfgcall  # noqa: E402
+import cfgact  # noqa: E402
 try:
     import cfgtrace as T  # ردپای بی‌خطر برای گزارش تکامل (خط زمانی، خطاهای بلعیده‌شده، زمان‌سنجی)
 except Exception:  # بدون ردپا هم برنامه مثل قبل کار می‌کنه
@@ -462,6 +463,9 @@ def disconnect(silent=False, keep_proxy=False):
         except subprocess.TimeoutExpired:
             XRAY_PROC.kill()
         XRAY_PROC = None
+    APIPORT[0] = 0
+    ACT.reset()
+    S["act"] = None
     if not silent and S["stage"] == "connected":
         GEN[0] += 1
         S.update(stage="idle", step=0, pct=0, msg="قطع شد", connected=None, note="")
@@ -499,16 +503,24 @@ def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None,
     return cc
 
 
-def check_many(cs, rounds=1, timeout=3, workers=8, speed=False, secs=3.0, sites=False):
+def check_many(cs, rounds=1, timeout=3, workers=8, speed=False, secs=3.0, sites=False, call=None, up=None):
     if not cs:
         return []
     with ThreadPoolExecutor(max_workers=min(res_workers(workers), len(cs))) as ex:
-        return list(ex.map(lambda c: check(c, rounds, timeout, speed, secs, sites), cs))
+        return list(ex.map(lambda c: check(c, rounds, timeout, speed, secs, sites, call, up), cs))
 
 
 MODE = ["stable"]
-CUR = ["balanced"]
-ROUNDS = {"balanced": 3, "speed": 2, "stable": 5, "secure": 3, "upload": 2}
+CUR = ["auto"]
+ROUNDS = {"auto": 3, "balanced": 3, "speed": 2, "stable": 5, "secure": 3, "upload": 2}
+ACT = cfgact.Sampler()  # فوق هوشمند: تشخیص فعالیتِ فعلی کاربر (فقط وقتی پروفایل auto باشه پر می‌شه)
+APIPORT = [0]  # پورت API آمار xray (فقط 127.0.0.1)؛ 0 = غیرفعال
+
+
+def bg_quiet():
+    """کارهای پس‌زمینه (تست سایت، سنجش جایگزین‌ها، پر کردن صف) وقتی ساکت می‌شن که تماس باشه (دستی یا تشخیص‌داده‌شده) یا کار حساس."""
+    return CALL[0] or (CUR[0] == "auto" and ACT.tracker.act in ("call", "secure"))
+
 SPEEDLIKE = ("speed", "upload")  # حالت‌هایی که «اندازه‌گیریِ واقعیِ سرعت» روی نامزدها انجام می‌دن (دانلود | آپلود)
 
 
@@ -609,6 +621,7 @@ def start_singbox(sel):
         except subprocess.TimeoutExpired:
             old.kill()
     ensure_ports()
+    APIPORT[0] = 0  # سینگ‌باکس API آمار xray رو نداره؛ تشخیص فعالیت غیرفعاله
     cfg = cfgscan.build_singbox(sel[0], [
         {"type": "socks", "tag": "s", "listen": "127.0.0.1", "listen_port": SOCKS},
         {"type": "http", "tag": "h", "listen": "127.0.0.1", "listen_port": HTTP}])
@@ -636,6 +649,14 @@ def start_singbox(sel):
     return sel
 
 
+def _pick_api_port():
+    for _ in range(80):
+        p = random.randrange(20000, 60000)
+        if p not in (SOCKS, HTTP) and port_free(p):
+            return p
+    return 0
+
+
 def start_xray(sel, profile, plain=False):
     """xray رو با لیست سرورها (دوباره) بالا میاره؛ وقتی پورت جواب داد برمی‌گرده."""
     global XRAY_PROC
@@ -643,9 +664,10 @@ def start_xray(sel, profile, plain=False):
         return start_singbox(sel[:1])
     sel = [c for c in sel if c["proto"] not in cfgscan.SB_PROTOS] or sel
     xray = find_xray()
+    want_api = profile == "auto" and not plain
     cfg, sel = cfgforge.make_client(sel, profile, None, [], SOCKS, HTTP,
                                     probe_interval="3s" if len(sel) > 1 else "30s", strategy="leastPing", plain=plain,
-                                    block_ads=True, direct_country=DIRECT[0])
+                                    block_ads=True, direct_country=DIRECT[0], api_port=1 if want_api else 0)
     old, XRAY_PROC = XRAY_PROC, None
     if old:
         old.terminate()
@@ -655,9 +677,24 @@ def start_xray(sel, profile, plain=False):
             old.kill()
     ensure_ports()
     cfg["inbounds"][0]["port"], cfg["inbounds"][1]["port"] = SOCKS, HTTP
+    api = _pick_api_port() if want_api else 0
+    for ib in cfg["inbounds"]:
+        if ib.get("tag") == "api-in":
+            ib["port"] = api
+    if want_api and not api:  # پورت آزاد پیدا نشد؛ بدون تشخیص فعالیت ادامه می‌دیم (اتصال مهم‌تره)
+        cfg["inbounds"] = [ib for ib in cfg["inbounds"] if ib.get("tag") != "api-in"]
+        cfg["routing"]["rules"] = [r for r in cfg["routing"]["rules"] if r.get("inboundTag") != ["api-in"]]
+        for k in ("stats", "api"):
+            cfg.pop(k, None)
+        cfg["log"] = {"loglevel": "warning"}
+        cfg.get("policy", {}).pop("system", None)
     XRAY_PROC = subprocess.Popen([xray, "run", "-c", "stdin:"], cwd=os.path.dirname(xray),
-                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE if api else subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    APIPORT[0] = api
+    if api:  # لاگ دسترسی (فقط در حافظه) برای تشخیص فعالیت؛ حتماً باید تخلیه بشه وگرنه xray گیر می‌کنه
+        proc = XRAY_PROC
+        threading.Thread(target=ACT.reader, args=(proc.stdout, lambda: proc is not XRAY_PROC), daemon=True).start()
     try:  # کانفیگ (با اطلاعات محرمانه‌ی سرور) از طریق stdin می‌ره و هیچ‌وقت روی دیسک نوشته نمی‌شه
         XRAY_PROC.stdin.write(json.dumps(cfg).encode("utf-8"))
         XRAY_PROC.stdin.close()
@@ -891,7 +928,7 @@ def bench_loop(gen):
                 if GEN[0] != gen or STOP.is_set():
                     return
                 time.sleep(1)
-            if CALL[0] or S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
+            if bg_quiet() or S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
                 continue
             bench_step()
     except Exception:
@@ -1367,6 +1404,8 @@ def eff_speed():
     sp = SPEED[0]
     if CALL[0]:
         return "gentle" if S["stage"] == "connected" else {"fast": "normal", "turbo": "normal"}.get(sp, sp)
+    if CUR[0] == "auto" and S["stage"] == "connected" and ACT.tracker.act in ("call", "secure", "upload", "download"):
+        return "gentle"  # اسکن پس‌زمینه نباید با کار فعلیِ کاربر سر پهنای‌باند و پردازنده دعوا کنه
     return sp
 
 
@@ -1527,7 +1566,7 @@ def refill(gen, profile, seen):
     last_fetch, P = time.time(), cfgforge.PROFILES[profile]
     while GEN[0] == gen and S["stage"] == "connected" and not STOP.is_set():
         time.sleep(10 if POOL.get("refill_fast", 0) > time.time() else 40)  # سرور فعلی ضعیفه و جایگزین نداریم: سریع‌تر دنبال جایگزین بگرد
-        if CALL[0]:
+        if bg_quiet():
             continue  # حالت تماس: ترافیک و پردازش پس‌زمینه ممنوع (جیتر تماس رو بالا می‌بره)
         if GEN[0] != gen or S["stage"] != "connected" or len(POOL["standby"]) >= 14:
             continue
@@ -1568,8 +1607,9 @@ def refill(gen, profile, seen):
 
 
 def supervisor(gen, profile, sysproxy, mode):
-    hist, fails, warned = deque(maxlen=45), 0, False
+    hist, fails, warned, warn_txt = deque(maxlen=45), 0, False, ""
     t_switch = t_eval = t_ref = time.time()
+    auto, jit_t0 = profile == "auto", 0.0
     while GEN[0] == gen and S["stage"] == "connected":
         mode = eff_mode(MODE[0])  # کاربر وسط اتصال حالت جابه‌جایی رو عوض کرده باشه همین لحظه اعمال می‌شه؛ حالت تماس «کم‌پینگ» رو هوشمند می‌کنه
         time.sleep(0.5 if (mode == "fast" or fails) else random.uniform(2.0, 4.0))  # سالم: کم‌تعداد و نامنظم؛ مشکوک: سریع‌تر
@@ -1587,6 +1627,8 @@ def supervisor(gen, profile, sysproxy, mode):
             fails = 0
             if S["connected"]:
                 S["connected"]["ms"] = ms
+        elif auto and APIPORT[0] and sum(ACT.rates.avg(6)) > 40:
+            pass  # فوق هوشمند: ترافیک واقعی داره از تونل رد می‌شه؛ پراب پشت صفِ انتقالِ خودِ کاربر مونده، پس این «قطع» نیست
         else:
             fails += 1
         if mode == "off":
@@ -1596,15 +1638,31 @@ def supervisor(gen, profile, sysproxy, mode):
         if lk != S.get("link"):
             T.evt("link", f"وضع لینک: {S.get('link')} ← {lk} (خطای پشت‌سرهم {fails}، پاسخ {len(okr)}/{len(hist)})")
         S["link"] = lk
+        act = ACT.tracker.act if (auto and APIPORT[0]) else ""
         if lk in ("jittery", "lossy") and not S.get("warn"):
-            S["warn"] = "نوسان" if lk == "jittery" else "افت"
-            S["warn"] = f"{S['warn']} شدید در اتصال فعلی؛ تا قطعِ کامل سرور عوض نمی‌شه."
-            warned = True
-        elif lk == "good" and warned and (S.get("warn") or "").endswith("عوض نمی‌شه."):
+            w = "نوسان" if lk == "jittery" else "افت"
+            if auto and act in ("upload", "download"):
+                S["warn"] = f"{w} در اتصال؛ وسط انتقال حجیم طبیعیه. اگه سرعت کم بمونه خودم سرور سریع‌تر می‌سنجم."
+            elif auto and act in ("call", "secure"):
+                S["warn"] = f"{w} در اتصال؛ وسط {'تماس' if act == 'call' else 'کار حساس'} سرور رو عوض نمی‌کنم مگر قطع کامل بشه."
+            elif auto:
+                S["warn"] = f"{w} در اتصال؛ اگه ادامه داشت خودم سرور بهتری می‌گردم."
+            else:
+                S["warn"] = f"{w} شدید در اتصال فعلی؛ تا قطعِ کامل سرور عوض نمی‌شه."
+            warned, warn_txt = True, S["warn"]
+        elif lk == "good" and warned and S.get("warn") == warn_txt:
             S["warn"], warned = "", False
         FAILN = 5 if mode == "stable" else 3  # حالت هوشمند: ۵ خطای پشت‌سرهم (≈۱۵–۲۰ ثانیه)، نه ۳ تا؛ خطای لحظه‌ای تماس رو قطع نکنه
         soft = (not CALL[0] and mode == "stable" and len(hist) >= 30 and time.time() - t_switch > 60 and len(okr) / len(hist) < 0.6
                 and calm_ok())
+        if auto and APIPORT[0]:
+            # فوق هوشمند: «نوسان» وسط تماس/کار حساس/انتقال حجیم دلیل جابه‌جایی نیست (انتقال حجیم رو auto_watch با سرعت واقعی می‌سنجه)؛
+            # وسط کار عادی هم فقط وقتی نوسان طولانی و پیوسته باشه (گشت‌وگذار حساس‌تره)
+            soft = False
+            jit_t0 = (jit_t0 or time.time()) if lk in ("jittery", "lossy") else 0.0
+            if (act in ("idle", "normal", "interactive") and jit_t0 and len(hist) >= 10 and time.time() - t_switch > 90
+                    and time.time() - jit_t0 >= (40 if act == "interactive" else 75) and calm_ok()):
+                soft = True
         if (fails >= FAILN or soft) and not dead and not net_up():
             S["note"] = "اینترنتِ خودت قطعه؛ سرور رو عوض نمی‌کنم و منتظر برگشتنش می‌مونم."
             fails = 2  # به‌محض برگشتن اینترنت، دوباره بسنجه
@@ -1622,14 +1680,188 @@ def supervisor(gen, profile, sysproxy, mode):
             T.incident("failover", why=why_fo, fails=fails, ok=f"{len(okr)}/{len(hist)}", **_inc_state())
             failover(gen, profile, sysproxy, mode)
             hist.clear()
-            fails, t_switch = 0, time.time()
-        elif time.time() - t_ref > 60 and not CALL[0]:
+            fails, t_switch, jit_t0 = 0, time.time(), 0.0
+        elif time.time() - t_ref > 60 and not bg_quiet():
             refresh_standby(gen)
             t_ref = time.time()
-        elif not CALL[0] and mode == "stable" and time.time() - t_eval > 600 and time.time() - t_switch > 600:
+        elif (not CALL[0] and mode == "stable" and time.time() - t_eval > 600 and time.time() - t_switch > 600
+              and (not auto or act in ("", "idle", "normal", "interactive"))):
             upgrade_check(gen, profile, hist)
             t_eval = time.time()
 
+
+# ── فوق هوشمند: تصمیم بر اساس «الان کاربر چی‌کار می‌کنه» ─────────────────────────────────────────────
+CRAWL = {"upload": 900, "download": 2500}  # کیلوبیت بر ثانیه؛ زیر این مقدار، انتقال حجیم «لاک‌پشتی» حساب می‌شه
+AUTO = {"crawl_t0": 0.0, "cool": 0.0, "tp": {}, "t_cq": 0.0, "call_poor": 0, "call_mos": 0.0, "log": deque(maxlen=30)}
+AUTO_LOCK = threading.Lock()  # فقط یک عملیات سنجش/جابه‌جاییِ فوق هوشمند هم‌زمان
+HINT = {"idle": "", "normal": "", "interactive": "برای گشت‌وگذار تأخیر کم و ثبات مهمه؛ اگه نوسان ادامه پیدا کنه سرور بهتر می‌گردم.",
+        "download": "دانلود حجیم: اگه سرعت خیلی کم بمونه سرور سریع‌تر می‌سنجم.",
+        "upload": "آپلود حجیم: اگه سرعت خیلی کم بمونه سرور سریع‌تر برای آپلود می‌سنجم.",
+        "call": "تماس: سرور رو وسط تماس عوض نمی‌کنم و فعالیت پس‌زمینه ساکته.",
+        "secure": "کار حساس: سرور ثابت می‌مونه (مگر قطع کامل) و فعالیت پس‌زمینه ساکته."}
+
+
+def auto_log(msg):
+    AUTO["log"].append([time.strftime("%H:%M:%S"), msg])
+    T.evt("auto", msg)
+
+
+def _auto_switch(gen, profile, best, why, verify=None):
+    """به سرور `best` می‌پره؛ اگه اتصال بالا نیومد یا `verify` رد کرد برمی‌گرده. True = جابه‌جا شد."""
+    with SWITCH:
+        if GEN[0] != gen or STOP.is_set() or MODE[0] == "off" or S["stage"] != "connected":
+            return False
+        prev = list(POOL["active"])
+        sel = start_xray([best], profile)
+        ms = probe_retry(3, 3)
+        if ms and (verify is None or verify(ms)):
+            POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
+            set_active(sel, ms)
+            POOL["switches"] += 1
+            POOL["sites"] = None
+            save_good(sel)
+            sw_mark(why)
+            return True
+        start_xray(prev, profile)  # بهتر نبود یا بالا نیومد؛ برگرد
+        return False
+
+
+def _tp_switch(gen, profile, kind, cur):
+    """انتقال حجیم لاک‌پشتی: چند جایگزین رو با «سرعت واقعی آپلود/دانلود» می‌سنجه و فقط به سروری می‌ره که واضحاً سریع‌تره."""
+    if not AUTO_LOCK.acquire(blocking=False):
+        return
+    try:
+        up, fld, now = kind == "upload", "kbps_up" if kind == "upload" else "kbps", time.time()
+        cands = [c for c in standby_ok() if AUTO["tp"].get(c["raw"], 0) < now]
+        cands.sort(key=lambda c: (not sites_ok(c), flaky(c), -((c.get(fld) or 0) // 250), eff(c)))
+        cands = cands[:5]
+        if not cands:
+            S["note"] = "انتقال کنده ولی جایگزین تازه‌ای برای سنجش ندارم؛ در پس‌زمینه دنبال سرور جدید می‌گردم."
+            POOL["refill_fast"] = now + 300
+            AUTO["cool"] = now + 240
+            auto_log(f"انتقال {kind} کند ({round(cur / 8)} KB/s) ولی جایگزینی برای سنجش نبود")
+            return
+        S["note"] = f"{'آپلود' if up else 'دانلود'} حجیمت کنده ({round(cur / 8)} KB/s)؛ دارم چند سرور رو با سرعت واقعی می‌سنجم ..."
+        res = check_many(cands, 1, 4, 3, speed=True, secs=3.0, sites=False, up=up)
+        by = {c["raw"]: c for c in POOL["standby"]}
+        for r in res:
+            AUTO["tp"][r["raw"]] = time.time() + 600  # تا ۱۰ دقیقه دوباره همین‌ها رو نسنج
+            if r.get(fld) and r["raw"] in by:
+                by[r["raw"]][fld] = r[fld]
+        need = max(cur * 2, cur + 1500)
+        good = sorted([r for r in res if solid(r) and (r.get(fld) or 0) >= need], key=lambda r: -(r.get(fld) or 0))
+        if not good or GEN[0] != gen or STOP.is_set():
+            S["note"] = "سرور واضحاً سریع‌تری پیدا نشد؛ با همین ادامه می‌دم و چند دقیقه‌ی دیگه دوباره می‌سنجم."
+            POOL["refill_fast"] = time.time() + 300
+            AUTO["cool"] = time.time() + 240
+            auto_log(f"سنجش {len(res)} سرور برای {kind}: بهتر از {round(cur / 8)} KB/s پیدا نشد")
+            return
+        best = good[0]
+        kb = best[fld]
+        if _auto_switch(gen, profile, best, f"انتقال {kind} لاک‌پشتی بود", None):
+            AUTO["cool"] = time.time() + 300
+            S["note"] = f"سرور سریع‌تر برای {'آپلود' if up else 'دانلود'} پیدا شد (~{round(kb / 8)} KB/s در سنجش)؛ انتقال‌ها دوباره وصل می‌شن."
+            auto_log(f"جابه‌جایی برای {kind}: {round(cur / 8)} → ~{round(kb / 8)} KB/s")
+        else:
+            AUTO["cool"] = time.time() + 240
+            S["note"] = "سرور سریع‌تر بالا نیومد؛ برگشتم روی سرور قبلی."
+    except Exception as e:
+        auto_log(f"خطا در سنجش انتقال: {type(e).__name__}")
+    finally:
+        AUTO_LOCK.release()
+
+
+def _post_call_improve(gen, profile):
+    """تماس تموم شد و کیفیتش ضعیف بود: حالا (بدون قطع تماس) بهترین سرور برای تماس بعدی رو می‌سنجه و اگه واضحاً بهتر بود می‌ره."""
+    if not AUTO_LOCK.acquire(blocking=False):
+        return
+    try:
+        cur_mos = AUTO["call_mos"] or 0.0
+        cands = sorted([c for c in standby_ok() if sites_ok(c)], key=lambda c: (call_key(c), eff(c)))[:6]
+        if not cands:
+            return
+        S["note"] = "تماس قبلی کیفیت ضعیفی داشت؛ دارم سرور بهتر برای تماس بعدی می‌سنجم ..."
+        res = check_many(cands, 1, 4, 3, sites=False, call=True)
+        for r in res:
+            if r.get("call"):
+                callmem_note(r, r["call"])
+        ok = sorted([r for r in res if solid(r) and cfgcall.call_ok(r.get("call"), "fair") and r["call"]["mos"] > cur_mos + 0.3],
+                    key=lambda r: -r["call"]["mos"])
+        if not ok or GEN[0] != gen:
+            S["note"] = "برای تماس بعدی سرور واضحاً بهتری پیدا نشد."
+            auto_log("بعد از تماس ضعیف: سرور بهتری پیدا نشد")
+            return
+
+        def good_udp(ms):
+            q = cfgcall.measure_via(SOCKS, 12)
+            return bool(q and cfgcall.call_ok(q, "fair") and q["mos"] > cur_mos)
+        if _auto_switch(gen, profile, ok[0], "بعد از تماس ضعیف: سرور بهتر برای تماس", good_udp):
+            S["note"] = f"برای تماس بعدی به سرور بهتری رفتم (MOS≈{ok[0]['call']['mos']})."
+            auto_log(f"بعد از تماس ضعیف: سرور با MOS≈{ok[0]['call']['mos']}")
+    except Exception as e:
+        auto_log(f"خطا در بهبود بعد از تماس: {type(e).__name__}")
+    finally:
+        AUTO_LOCK.release()
+
+
+def _auto_policy(gen, profile, info):
+    now, act = time.time(), info["act"]
+    if act in CRAWL:
+        up15, dn15 = ACT.rates.avg(20)
+        cur = up15 if act == "upload" else dn15
+        if info["since"] >= 15 and cur < CRAWL[act]:
+            AUTO["crawl_t0"] = AUTO["crawl_t0"] or now
+        else:
+            AUTO["crawl_t0"] = 0.0
+        if (AUTO["crawl_t0"] and now - AUTO["crawl_t0"] >= 40 and now > AUTO["cool"] and not AUTO_LOCK.locked()
+                and (not SW_LOG or now - SW_LOG[-1][0] > 60) and calm_ok()):
+            AUTO["crawl_t0"] = 0.0
+            AUTO["cool"] = now + 120
+            threading.Thread(target=_tp_switch, args=(gen, profile, act, cur), daemon=True).start()
+    else:
+        AUTO["crawl_t0"] = 0.0
+    if act == "call" and now - AUTO["t_cq"] > 45 and not AUTO_LOCK.locked():
+        AUTO["t_cq"] = now
+        q = cfgcall.measure_via(SOCKS, 10)
+        if q:
+            AUTO["call_mos"] = q["mos"]
+            if POOL["active"]:
+                callmem_note(POOL["active"][0], q)
+            AUTO["call_poor"] = AUTO["call_poor"] + 1 if not cfgcall.call_ok(q, "fair") else 0
+            S["act"] = dict(S.get("act") or info, q=dict(grade_fa=q["grade_fa"], mos=q["mos"]))
+            if AUTO["call_poor"] == 2:
+                S["note"] = "کیفیت تماس ضعیفه؛ وسط تماس سرور رو عوض نمی‌کنم، بعد از تموم‌شدنش سرور بهتر می‌گردم."
+
+
+def auto_watch(gen, profile, sysproxy):
+    """هر ۳ ثانیه فعالیت کاربر رو می‌سنجه و سیاست مناسبش رو اعمال می‌کنه (فقط پروفایل «فوق هوشمند»)."""
+    xray, last, was_call = find_xray(), "idle", False
+    AUTO.update(crawl_t0=0.0, call_poor=0, t_cq=0.0)
+    try:
+        while GEN[0] == gen and S["stage"] == "connected" and not STOP.is_set():
+            time.sleep(3)
+            if GEN[0] != gen or S["stage"] != "connected":
+                return
+            proc = XRAY_PROC
+            if proc is None or proc.poll() is not None or not APIPORT[0]:
+                S["act"] = None
+                continue
+            info = ACT.tick(cfgact.query_stats(xray, APIPORT[0]))
+            act = info["act"]
+            S["act"] = dict(info, hint=HINT.get(act, ""), locked=MODE[0] == "off")
+            if act != last:
+                auto_log(f"فعالیت: {cfgact.FA[last]} ← {cfgact.FA[act]} ({info.get('reason', '')})")
+                if last == "call" and AUTO["call_poor"] >= 2 and MODE[0] != "off" and time.time() > AUTO["cool"] and calm_ok():
+                    AUTO["cool"] = time.time() + 300
+                    threading.Thread(target=_post_call_improve, args=(gen, profile), daemon=True).start()
+                if last == "call":
+                    AUTO["call_poor"] = 0
+                last = act
+            if MODE[0] != "off":
+                _auto_policy(gen, profile, info)
+    finally:
+        if GEN[0] == gen:
+            S["act"] = None
 
 RUNNING = [0]  # تعداد جستجوهای در حال اجرا
 SWITCH = threading.RLock()  # فقط یک نفر هم‌زمان سرور فعال رو عوض کنه (جابه‌جایی خودکار، بررسی بعد از جستجو، ارتقا)
@@ -2397,7 +2629,7 @@ def sites_watch(gen, profile, found):
                 if GEN[0] != gen or STOP.is_set():
                     return
                 time.sleep(5)
-            if CALL[0]:
+            if bg_quiet():
                 continue  # حالت تماس: چک سایت‌ها و کشف منبع ترافیک اضافه‌ست
             if S["stage"] == "connected" and not DISC["running"] and time.time() - LEARN["disc_t"] > 20:
                 threading.Thread(target=discover_sources, daemon=True).start()  # اگه موعدش نشده باشه فوراً برمی‌گرده
@@ -2491,7 +2723,7 @@ def standby_sites(gen):
     اونایی که باز نمی‌کنن از لیست جایگزین‌ها حذف می‌شن تا جابه‌جایی خودکار هیچ‌وقت به سرور بی‌فایده نپره."""
     try:
         while GEN[0] == gen and not STOP.is_set():
-            if CALL[0]:
+            if bg_quiet():
                 time.sleep(5)  # حالت تماس: تست پس‌زمینه‌ی سایت‌ها ممنوع
                 continue
             now = time.time()  # تازه‌ها یا اونایی که نتیجه‌ی سایتشون از SITE_RETEST ثانیه قدیمی‌تره (سرور وسط راه ممکنه خراب شده باشه)
@@ -3126,6 +3358,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             threading.Thread(target=sites_watch, args=(GEN[0], profile, found), daemon=True).start()
             threading.Thread(target=bench_loop, args=(GEN[0],), daemon=True).start()
             threading.Thread(target=call_monitor, args=(GEN[0],), daemon=True).start()
+            if profile == "auto" and APIPORT[0]:
+                threading.Thread(target=auto_watch, args=(GEN[0], profile, sysproxy), daemon=True).start()
             if CALL[0]:  # حالت تماس از قبل روشن بوده؛ بعد از وصل‌شدن خودش دنبال سرور مناسب تماس می‌گرده
                 threading.Thread(target=_call_after_connect, args=(GEN[0], profile), daemon=True).start()
 
@@ -3465,6 +3699,8 @@ def evolve_ctx():
     return {"settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct")},
             "resource": _res_snapshot(),
             "loadguard": LOAD.snapshot(),  # ضریب ترمز CPU، دیرکرد پردازه، سهم CPU (برای تنظیم سقف‌ها از روی گزارش واقعی)
+            "auto": {"profile": CUR[0], "api": bool(APIPORT[0]), "act": S.get("act"), "cool_in_s": max(0, int(AUTO["cool"] - time.time())),
+                     "decisions": list(AUTO["log"])},  # فوق هوشمند: فعالیت تشخیص‌داده‌شده و تصمیم‌های اخیر (بدون هیچ آدرس/میزبانی)
             "trace": _trace, "hints": _hints,  # خط زمانی رویدادها، خطاهای بلعیده‌شده، زمان‌سنجی، زمان‌بندی جستجوها، لحظه‌های مشکل + خلاصه‌ی خودکار
             "speed_now": SPEED[0], "speed_effective": sp, "speed_table": SPEEDS, "profile_now": CUR[0],
             "flags": {"tgonly": TGONLY[0], "call": CALL[0], "vpn": VPN[0], "vpn_want": VPN_WANT[0], "background": BG[0], "android": bool(ANDROID),
@@ -3528,7 +3764,7 @@ def start_session(j):
         if PIPE and PIPE.is_alive():  # اجرای قبلی هنوز در حال بسته‌شدنه؛ اجرای تازه روی دست اون شروع نمی‌شه
             S["msg"] = "اجرای قبلی هنوز در حال توقفه؛ چند ثانیه بعد دوباره شروع کن."
             return {"ok": False, "error": "busy"}
-    prof = j.get("profile") if _in(j.get("profile"), cfgforge.PROFILES) else "balanced"
+    prof = j.get("profile") if _in(j.get("profile"), cfgforge.PROFILES) else "auto"
     PIPE = threading.Thread(target=pipeline, args=(prof, bool(j.get("quick", True)),
                                                    bool(j.get("sysproxy", True)),
                                                    j.get("mode") if _in(j.get("mode"), ("stable", "fast", "off")) else "stable"),

@@ -3,6 +3,9 @@
 from cfgscan import build_xray, LAT_URL, android_dns
 
 PROFILES = {
+    # فوق هوشمند: تنظیم پایه‌اش مثل «متعادل» ولی بدون mux (mux سرعت آپلود/دانلودِ یک جریان بزرگ رو می‌خوابونه)؛
+    # بقیه‌ی هوشمندی در cfgweb/cfgact انجام می‌شه (تشخیص فعالیت و تصمیم بر اساس اون).
+    "auto": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=False, desc="فوق هوشمند"),
     "balanced": dict(fragment=True, mux=True, strategy="leastPing", only_encrypted=False, desc="متعادل"),
     "speed": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=False, desc="سرعت"),
     "stable": dict(fragment=True, mux=False, strategy="leastPing", only_encrypted=False, desc="پایداری"),
@@ -27,7 +30,7 @@ def set_dialer(ob, tag):
 
 
 def make_client(cfgs, prof, chain, direct, sport, hport, probe_interval="30s", strategy=None, plain=False, block_ads=False,
-                direct_country=""):
+                direct_country="", api_port=0):
     P = PROFILES[prof]
     call = CALL[0]
     if chain or call:
@@ -78,6 +81,14 @@ def make_client(cfgs, prof, chain, direct, sport, hport, probe_interval="30s", s
            "routing": {"domainStrategy": "AsIs", "rules": rules}}
     if call:  # سشن‌های UDP بی‌صدا (قطع میکروفون/hold) نباید زود بسته بشن
         cfg["policy"] = {"levels": {"0": {"connIdle": 600, "handshake": 8}}}
+    if api_port:  # فوق هوشمند: آمار ترافیک خروجی (API محلی، فقط 127.0.0.1) + لاگ دسترسی روی خروجی استاندارد (فقط در حافظه خونده می‌شه)
+        cfg["log"] = {"loglevel": "warning", "access": ""}
+        cfg["stats"] = {}
+        cfg["api"] = {"tag": "api", "services": ["StatsService"]}
+        cfg.setdefault("policy", {})["system"] = {"statsOutboundUplink": True, "statsOutboundDownlink": True}
+        cfg["inbounds"].append({"tag": "api-in", "listen": "127.0.0.1", "port": api_port, "protocol": "dokodemo-door",
+                                "settings": {"address": "127.0.0.1"}})
+        cfg["routing"]["rules"].insert(0, {"type": "field", "inboundTag": ["api-in"], "outboundTag": "api"})
     if multi:
         cfg["routing"]["balancers"] = [{"tag": "bal", "selector": ["proxy-"], "strategy": {"type": strategy or P["strategy"]}}]
         cfg["observatory"] = {"subjectSelector": ["proxy-"], "probeUrl": LAT_URL, "probeInterval": probe_interval, "enableConcurrency": True}
