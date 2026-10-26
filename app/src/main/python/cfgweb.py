@@ -22,10 +22,12 @@ import cfgscan, cfgforge, report  # noqa: E402
 cfgres = None  # تنظیم منابع فقط در نسخه‌ی اندروید هست
 import cfgcall  # noqa: E402
 import cfgact  # noqa: E402
+import cfgdata  # noqa: E402
 try:
     import cfgtrace as T  # ردپای بی‌خطر برای گزارش تکامل (خط زمانی، خطاهای بلعیده‌شده، زمان‌سنجی)
 except Exception:  # بدون ردپا هم برنامه مثل قبل کار می‌کنه
     class T:
+        T0 = time.time()
         evt = err = count = perf = run_begin = run_mark = run_end = incident = staticmethod(lambda *a, **k: None)
         snapshot = staticmethod(lambda *a, **k: {})
 try:
@@ -317,6 +319,11 @@ def save_settings(j):
     for k in ("quick", "sysproxy", "tgonly", "autosrc", "call", "autores", "netprobe", "evolve_ok", "hc", "onboarded", "ui2"):
         if isinstance(j.get(k), bool):
             cur[k] = j[k]
+    dm = j.get("data_mb")
+    if isinstance(dm, int) and not isinstance(dm, bool) and 0 <= dm <= 20000:
+        cur["data_mb"] = dm  # سقف مصرف روزانه‌ی خودِ برنامه (مگابایت)؛ ۰ = نامحدود
+    elif "data_mb" in j and dm is None:
+        cur.pop("data_mb", None)  # «خودکار»
     fs = j.get("fs")
     if isinstance(fs, (int, float)) and not isinstance(fs, bool) and 0.8 <= fs <= 1.8:
         cur["fs"] = round(float(fs), 2)  # اندازه‌ی نوشته (ضریب)؛ کاربر در شروع برنامه با دید خودش انتخاب می‌کنه
@@ -384,21 +391,34 @@ def load_block():
     cfgscan.BLOCK = b
 
 
+def _age_h(path):
+    try:
+        return (time.time() - path.stat().st_mtime) / 3600
+    except OSError:
+        return 1e9
+
+
+def save_net_now():
+    """نت همراه یا سقف مصرف پر شده؟ دانلودهای خودکارِ سنگین (فهرست منبع‌ها/فهرست سیاه) تا وقتی نسخه‌ی تازه‌ی کافی داریم تکرار نمی‌شن."""
+    return net_is_mobile() or data_saver()
+
+
 def update_block(force=False):
     """به‌روزرسانی فهرست سیاه؛ با تایم‌اوت، و در صورت خطا همون نسخه‌ی قبلی می‌مونه. force: بدون صبر و بدون چک «کمتر از ۲۴ ساعت»."""
     try:
         if not force:
             time.sleep(30)
         p = DATA / "blocklist.txt"
-        if not force and p.exists() and time.time() - p.stat().st_mtime < 86400:
-            return
+        if p.exists() and time.time() - p.stat().st_mtime < 86400 and (not force or save_net_now()):
+            return  # نت همراه: فهرست سیاهِ کمتر از ۲۴ ساعته دوباره دانلود نمی‌شه (حتی موقع شروع برنامه)
         texts = []
         for u in cfgscan.BLOCK_SOURCES:
             for m in cfgscan.mirror_urls(u):
                 try:
                     op = cfgscan.safe_opener()
-                    texts.append(op.open(urllib.request.Request(m, headers={"User-Agent": "Mozilla/5.0"}),
-                                         timeout=20).read(8_000_000).decode("utf-8", "replace"))
+                    _raw = op.open(urllib.request.Request(m, headers={"User-Agent": "Mozilla/5.0"}), timeout=20).read(8_000_000)
+                    cfgdata.add(len(_raw) + 5000, "sources")
+                    texts.append(_raw.decode("utf-8", "replace"))
                     break
                 except Exception:
                     continue
@@ -517,9 +537,43 @@ ACT = cfgact.Sampler()  # فوق هوشمند: تشخیص فعالیتِ فعل�
 APIPORT = [0]  # پورت API آمار xray (فقط 127.0.0.1)؛ 0 = غیرفعال
 
 
+_MOB = [0.0, False]
+
+
+def net_is_mobile():
+    """الان روی نت همراهی؟ (هر ۳ ثانیه یک بار پرسیده می‌شه؛ بدون ترافیک)"""
+    if time.time() - _MOB[0] > 3:
+        _MOB[0] = time.time()
+        try:
+            _MOB[1] = netprobe is not None and netprobe.net_kind() == "mob"
+        except Exception:
+            _MOB[1] = False
+    return _MOB[1]
+
+
+def data_budget_mb():
+    """سقف مصرف روزانه‌ی خودِ برنامه (جستجو، سرعت‌سنجی، منابع، پراب). پیش‌فرض: روی نت همراه ۱۵۰ مگابایت، روی مودم/وای‌فای نامحدود. ۰ = نامحدود."""
+    v = load_settings().get("data_mb")
+    if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 20000:
+        return v if net_is_mobile() or v == 0 else v  # کاربر صریحاً گفته؛ همه‌جا اعمال می‌شه
+    return 150 if net_is_mobile() else 0
+
+
+def data_saver():
+    """سقف روزانه پر شده؟ اون‌وقت همه‌ی کارهای پس‌زمینه‌ی مصرف‌کننده‌ی اینترنت می‌ایستن (اتصال و نظارت اتصال فعلی می‌مونن)."""
+    b = data_budget_mb()
+    return bool(b) and cfgdata.used_mb() >= b
+
+
+def data_view():
+    t = cfgdata.today()
+    return {"mb": round(t.get("total", 0) / 1e6, 1), "cats": {k: round(v / 1e6, 1) for k, v in t.items() if k != "total"},
+            "budget": data_budget_mb(), "saver": data_saver(), "mobile": net_is_mobile()}
+
+
 def bg_quiet():
-    """کارهای پس‌زمینه (تست سایت، سنجش جایگزین‌ها، پر کردن صف) وقتی ساکت می‌شن که تماس باشه (دستی یا تشخیص‌داده‌شده) یا کار حساس."""
-    return CALL[0] or (CUR[0] == "auto" and ACT.tracker.act in ("call", "secure"))
+    """کارهای پس‌زمینه (تست سایت، سنجش جایگزین‌ها، پر کردن صف) وقتی ساکت می‌شن که تماس باشه (دستی یا تشخیص‌داده‌شده)، کار حساس، یا سقف مصرف نت پر شده باشه."""
+    return CALL[0] or (CUR[0] == "auto" and ACT.tracker.act in ("call", "secure")) or data_saver()
 
 SPEEDLIKE = ("speed", "upload")  # حالت‌هایی که «اندازه‌گیریِ واقعیِ سرعت» روی نامزدها انجام می‌دن (دانلود | آپلود)
 
@@ -1568,7 +1622,7 @@ def refill(gen, profile, seen):
         time.sleep(10 if POOL.get("refill_fast", 0) > time.time() else 40)  # سرور فعلی ضعیفه و جایگزین نداریم: سریع‌تر دنبال جایگزین بگرد
         if bg_quiet():
             continue  # حالت تماس: ترافیک و پردازش پس‌زمینه ممنوع (جیتر تماس رو بالا می‌بره)
-        if GEN[0] != gen or S["stage"] != "connected" or len(POOL["standby"]) >= 14:
+        if GEN[0] != gen or S["stage"] != "connected" or len(POOL["standby"]) >= (6 if net_is_mobile() else 14):
             continue
         batch = [POOL["backlog"].pop(0) for _ in range(min(8, len(POOL["backlog"])))]
         if not batch:
@@ -1619,7 +1673,8 @@ def supervisor(gen, profile, sysproxy, mode):
         ms = None
         if not dead:
             try:
-                ms = probe_robust(3.0) if mode == "stable" else probe(1.5)
+                with cfgdata.cat("probe"):
+                    ms = probe_robust(3.0) if mode == "stable" else probe(1.5)
             except Exception:
                 ms = None
         hist.append(ms)
@@ -1852,6 +1907,9 @@ def auto_watch(gen, profile, sysproxy):
                     S["act"] = None
                     continue
                 tot = cfgact.query_stats(xray, APIPORT[0])
+                if tot and D.get("_prev") and tot[0] >= D["_prev"][0] and tot[1] >= D["_prev"][1]:
+                    cfgdata.add((tot[0] - D["_prev"][0]) + (tot[1] - D["_prev"][1]), "user")  # ترافیک خود کاربر (نه مصرف برنامه)
+                D["_prev"] = tot
                 D["ticks"] += 1
                 D["stats_ok" if tot else "stats_fail"] += 1
                 D["flows"] = len(ACT.flows)
@@ -2855,6 +2913,10 @@ def startup_refresh():
         say("در حال به‌روزرسانی منابع و فهرست سیاه ...")
         tb = threading.Thread(target=update_block, args=(True,), daemon=True)
         tb.start()
+        if save_net_now() and _age_h(DATA / "cache.txt") < 6:
+            say("صرفه‌جویی اینترنت: فهرست کانفیگ‌ها کمتر از ۶ ساعت پیش دانلود شده؛ الان دوباره دانلود نمی‌شه (هر وقت لازم بود خودش تازه می‌کنه).")
+            tb.join(30)
+            return
         ca = HERE / "cacert.pem"
         if ca.is_file():
             cfgscan.CA_FILE = str(ca)
@@ -2913,35 +2975,102 @@ def reprobe_net():
         pass
 
 
+NETCHG = {"n": 0, "t": 0.0, "log": deque(maxlen=12)}
+RESTART_T = [0.0]
+FA_NET = {"mob": "نت همراه", "wifi": "وای‌فای", "eth": "کابل/مودم", "": "نامشخص"}
+
+
+def _fa_net(fp):
+    k = (fp or "").split("#")[0].split(":")[0]
+    return FA_NET.get(k, "شبکه‌ی دیگه")
+
+
+def restart_pipeline(reason):
+    """جستجو/اتصال رو با همون تنظیمات آخر از نو شروع می‌کنه (مثلاً بعد از عوض شدن شبکه)؛ نتیجه‌ی تست‌های شبکه‌ی قبلی دیگه معتبر نیست."""
+    global PIPE
+    if not LASTARGS[0] or QUITTING[0]:
+        return False
+    if time.time() - RESTART_T[0] < 15:  # شبکه مدام قطع‌ووصل می‌شه؛ هر چند ثانیه از نو شروع نکن (پیشرفت جستجو هدر نره)
+        T.evt("restart_skipped", reason)
+        return False
+    RESTART_T[0] = time.time()
+    prof, sysproxy, mode = LASTARGS[0]
+    with START_LOCK:
+        if PIPE and PIPE.is_alive():
+            STOP.set()
+            PIPE.join(20)
+        if PIPE and PIPE.is_alive():
+            return False
+        SITE_CACHE.clear()
+        POOL["tiers"] = None
+        PREFETCH.update(links=[], stats={}, t=0.0, origin={})
+        cfgscan.REACH_CACHE.clear()
+        T.evt("restart", reason)
+        PIPE = threading.Thread(target=pipeline, args=(prof, True, sysproxy, mode, True), daemon=True)
+        PIPE.start()
+    return True
+
+
+def on_net_change(old, new):
+    """شبکه عوض شد (نت همراه ↔ وای‌فای ↔ مودم، یا اپراتور/سیم‌کارت/وای‌فای دیگه): فوری واکنش نشون بده."""
+    NETCHG["n"] += 1
+    NETCHG["t"] = time.time()
+    NETCHG["log"].append([time.strftime("%H:%M:%S"), _fa_net(old), _fa_net(new), S.get("stage", "")])
+    T.evt("net_change", f"شبکه عوض شد: {_fa_net(old)} ← {_fa_net(new)} (مرحله: {S.get('stage')})")
+    T.incident("net_change", was=(old or "").split("#")[0], now=(new or "").split("#")[0], **_inc_state())
+    NETP["net"], NETID[0] = None, ""
+    S["netchg"] = {"t": int(time.time()), "from": _fa_net(old), "to": _fa_net(new)}
+    say(f"شبکه عوض شد: {_fa_net(old)} ← {_fa_net(new)}")
+    stage = S.get("stage")
+    if stage == "running":  # وسط جستجو: نتیجه‌ی تست‌های قبلی مال شبکه‌ی دیگه‌ست؛ از نو با شبکه‌ی جدید
+        S["note"] = f"شبکه عوض شد ({_fa_net(old)} ← {_fa_net(new)}); جستجو رو با شبکه‌ی جدید از نو شروع می‌کنم ..."
+        restart_pipeline("تغییر شبکه وسط جستجو")
+        return
+    if stage == "connected":
+        S["note"] = f"شبکه عوض شد ({_fa_net(old)} ← {_fa_net(new)}); دارم سرور فعلی رو روی شبکه‌ی جدید می‌سنجم ..."
+        ok = bool(probe(3.0)) or bool(probe(3.0))
+        if not ok:
+            S["note"] = "شبکه عوض شد و سرور فعلی روی این شبکه جواب نمی‌ده؛ دوباره جستجو می‌کنم ..."
+            restart_pipeline("سرور فعلی روی شبکه‌ی جدید جواب نداد")
+            return
+        S["note"] = "شبکه عوض شد؛ سرور فعلی روی شبکه‌ی جدید هم جواب می‌ده."
+        threading.Thread(target=reprobe_net, daemon=True).start()
+        gen = GEN[0]
+        threading.Thread(target=refresh_standby, args=(gen,), daemon=True).start()  # جایگزین‌ها هم روی شبکه‌ی جدید دوباره سنجیده می‌شن
+        threading.Thread(target=sites_guard, args=(gen, CUR[0], []), daemon=True).start()
+        return
+    threading.Thread(target=reprobe_net, daemon=True).start()
+
+
 def net_watch():
-    """هر ۱۵ ثانیه بدون ترافیک چک می‌کنه نوع شبکه (مودم ↔ نت همراه ↔ هات‌اسپات) عوض شده یا نه. دو بار پشت‌سرهم عوض‌شده دیده بشه یعنی واقعاً عوض شده:
-    سنجش و شناسه‌ی شبکه کنار گذاشته می‌شه؛ اگه سرور فعلی روی شبکه‌ی تازه جواب نمی‌ده جستجو دوباره شروع می‌شه."""
-    bad = 0
+    """هر ۳ ثانیه (بدون ترافیک) اثرانگشت شبکه رو می‌سنجه. دو نمونه‌ی پشت‌سرهم با مقدار تازه یعنی واقعاً عوض شده (≈۶ ثانیه)."""
+    last = pend = None
+    n = 0
     while True:
-        time.sleep(15)
+        time.sleep(3)
         try:
+            cfgdata.save()
             if netprobe is None:
                 continue
-            cur = netprobe.net_kind()
-            base = (NETP.get("net") or {}).get("kind")
-            if not cur or not base or cur == base:
-                bad = 0
+            fp = netprobe.net_fp()
+            if not fp:
                 continue
-            bad += 1
-            if bad < 2:
+            if last is None:
+                last = fp
                 continue
-            bad = 0
-            T.evt("net_change", f"نوع شبکه عوض شد: {base} ← {cur}")
-            T.incident("net_change", was=base, now=cur, **_inc_state())
-            NETP["net"], NETID[0] = None, ""
-            if S.get("stage") == "connected" and not RUNNING[0] and LASTARGS[0] and not probe(3.0):
-                S["note"] = "شبکه عوض شد و سرور فعلی روی این شبکه جواب نمی‌ده؛ دوباره جستجو می‌کنم ..."
-                prof, sysproxy, mode = LASTARGS[0]
-                threading.Thread(target=pipeline, args=(prof, True, sysproxy, mode, True), daemon=True).start()
+            if fp == last:
+                pend, n = None, 0
                 continue
-            reprobe_net()
-        except Exception:
-            pass
+            if fp != pend:
+                pend, n = fp, 1
+                continue
+            n += 1
+            if n < 2:
+                continue
+            old, last, pend, n = last, fp, None, 0
+            on_net_change(old, fp)
+        except Exception as e:
+            T.err("net_watch", e)
 
 
 def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1, cycle=0):
@@ -2973,6 +3102,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         P = cfgforge.PROFILES[profile]
         CUR[0] = profile
         target, up_cap, hard_cap = (14, 90, 360) if quick else (24, 240, 900)
+        if net_is_mobile():  # نت همراه: بعد از چند سرور سالمِ کافی جستجو رو تموم کن؛ هر تست چند کیلوبایت از بسته‌ی نت می‌خوره
+            target, up_cap = min(target, 6), min(up_cap, 45)
         if profile in SPEEDLIKE:  # برای پیدا کردن سرور واقعاً سریع، نمونه‌ی بیشتری لازمه
             target, up_cap = max(target, 24), max(up_cap, 150)
         tmo = [2.5, 5] if level == 1 else [4, 9]
@@ -2987,6 +3118,19 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         pace = Pace(lambda: speed_params()["rate"] * (1 if level == 1 else 2) * AVF[0])
         ex = ThreadPoolExecutor(max_workers=sp["workers"])
         found, connected, fails, t0, t_first = [], [False], [0], time.time(), [None]
+
+        def smsg(sub=""):
+            """یک پیام ثابت و پراطلاعات برای جستجو (شمارنده‌ها همیشه همون‌جا می‌مونن؛ فقط توضیح مرحله‌ی فرعی عوض می‌شه)،
+            تا صفحه بین چند متن مختلف نپره و کاربر ببینه واقعاً چقدر پیش رفته."""
+            el = max(1, int(time.time() - t0))
+            tot, fin = max(pend[0], 1), finished
+            S["prog"] = {"tested": fin, "total": tot, "alive": len(found), "elapsed": el, "cap": hard_cap, "rate": round(fin / el, 1)}
+            m = f"در حال جستجو: {fin} از {tot} تست شد · {len(found)} سالم · {round(fin / el, 1)} تست در ثانیه · {el // 60}:{el % 60:02d} از {hard_cap // 60}:00"
+            if sub == "check":
+                m += " — دارم یوتیوب، اینستاگرام و تلگرام رو روی یک سرور سالم می‌سنجم"
+            elif sub == "none" and found:
+                m += f" — هنوز سروری که {_want()} رو باز کنه پیدا نشده؛ جستجو ادامه داره"
+            return m
         fetch_done = threading.Event()
         net, net_evt, clock = [None], threading.Event(), [False]
         NETID[0] = ""  # شبکه‌ی این اجرا هنوز مشخص نیست (ممکنه سیم‌کارت/مودم عوض شده باشه)
@@ -3226,8 +3370,11 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     links, stats = list(PREFETCH["links"]), PREFETCH["stats"]
                     origin.update(PREFETCH["origin"])
                     say(f"از منابع تازه‌ی همین چند لحظه‌ی پیش استفاده می‌شه ({len(links)} کانفیگ).")
+                skip = (save_net_now() and _age_h(DATA / "cache.txt") < 6 and level == 1 and not links)  # نت همراه: لیست تازه‌ی ۶ ساعته هست؛ دوباره دانلود نکن
+                if skip:
+                    say("صرفه‌جویی اینترنت: از فهرست کانفیگ‌های ذخیره‌شده (کمتر از ۶ ساعت) استفاده می‌شه.")
                 for n in (1, 2, 3):
-                    if links:
+                    if links or skip:
                         break
                     links, stats = cfgscan.fetch_sources(urls, per_source=2500, log=say, origin=origin, stop=STOP.is_set,
                                                          proxy_port=HTTP if XRAY_PROC else None)
@@ -3251,7 +3398,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                             write_secret(DATA / "cache.txt", "\n".join(links))
                         except OSError:
                             pass
-                else:
+                elif not skip:
                     try:
                         age = int((time.time() - (DATA / "cache.txt").stat().st_mtime) / 3600)
                         old = f"آخرین دانلود موفق {age} ساعت پیش بود" if age else "آخرین دانلود موفق کمتر از یک ساعت پیش بود"
@@ -3312,8 +3459,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                         for c in list(found)) or any(r.get("alive") and sites_ok(r) for r in list(site_cache.values()))):
                 return  # چیز تازه‌ای برای تست نیست و سرور قابل‌قبولی هم نداریم؛ پیام صفحه الکی عوض نشه
             conn["busy"] = True
-            S.update(step=4, msg=("در حال انتخاب سریع‌ترین سرور ..." if profile in SPEEDLIKE
-                                  else "سرور سالم پیدا شد؛ در حال بررسی یوتیوب، اینستاگرام و تلگرام ..."))
+            S.update(step=4, msg=("در حال انتخاب سریع‌ترین سرور ..." if profile in SPEEDLIKE else smsg("check")))
 
             def run():
                 try:
@@ -3323,7 +3469,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 finally:
                     conn["busy"] = False
                     if not connected[0] and S["stage"] == "running" and not STOP.is_set():
-                        S.update(step=2, msg=f"ادامه‌ی جستجو ... ({len(found)} سرور سالم؛ هنوز سروری که {_want()} رو باز کنه پیدا نشده)")
+                        S.update(step=2, msg=smsg("none"))
             threading.Thread(target=run, daemon=True).start()
 
         def try_connect():
@@ -3405,8 +3551,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             if not connected[0] and not conn["busy"]:
                 S["pct"] = min(70, 8 + int(62 * finished / max(1, pend[0])))
                 if S["stage"] == "running" and S["step"] == 2:
-                    S["msg"] = (f"تست از شبکه‌ی خودت: {finished} از {pend[0]} | سالم: {len(found)}"
-                                + ("" if fetch_done.is_set() else " | منابع در حال دانلود ..."))
+                    S["msg"] = smsg("none" if found else "") + ("" if fetch_done.is_set() else " | منابع در حال دانلود ...")
             elif S["stage"] == "connected" and failover_on:
                 S["note"] = f"در حال یافتن سرورهای بیشتر ... ({len(found)} سرور سالم تا الان)"
             if len(found) >= target:
@@ -3603,6 +3748,7 @@ def state():
     d["call"] = call_state()
     d["net"], d["diag"], d["link"], d["evolve"] = net_view(), dict(DIAG, skip=dict(DIAG.get("skip") or {})), S.get("link", ""), bool(_ev)
     d["bench"] = len(POOL.get("bench") or [])
+    d["data"] = data_view()
     d["disc"] = dict(DISC, last=LEARN["disc_t"])
     d["autosrc"] = [dict(url=x["url"], got=x.get("got", 0), on=bool(x.get("on")), off=bool(x.get("auto_off")),
                          tested=int((source_v(x["url"]) or [0])[0]), passed=int((source_v(x["url"]) or [0, 0, 0, 0])[3]))
@@ -3629,6 +3775,7 @@ def quit_app(uninstall=False):
 
 
 def shutdown():
+    cfgdata.save(True)
     learn_save(True)  # یادگیری و حافظه‌ی بد با بستن برنامه از دست نمی‌رن
     bad_save(True)
     callmem_save(True)
@@ -3662,6 +3809,68 @@ def _res_snapshot():
                 "log": [[round(a, 1), round(b, 2), str(c)[:80]] for a, b, c in list(g.log)[-30:]]}
     except Exception:
         return None
+
+
+SERIES = deque(maxlen=180)  # هر ۱۰ ثانیه یک نمونه‌ی عددی؛ ۳۰ دقیقه‌ی اخیر
+HTTPS = {"last_state_t": 0.0}
+
+
+def _safe_fp():
+    try:
+        return (netprobe.net_fp() if netprobe else "") or ""
+    except Exception:
+        return ""
+
+
+def _thread_census():
+    out = {}
+    for t in threading.enumerate():
+        tg = getattr(t, "_target", None)
+        n = getattr(tg, "__name__", None) or t.name.split("-")[0]
+        out[n] = out.get(n, 0) + 1
+    return out
+
+
+def series_loop():
+    """نمونه‌برداری آرام از شاخص‌های اصلی؛ بعداً می‌شه دید «کِی» چی عوض شد (نه فقط حالا چیه)."""
+    while True:
+        time.sleep(10)
+        try:
+            pr = S.get("prog") or {}
+            c = S.get("connected") or {}
+            SERIES.append({"t": int(time.time() - T.T0), "stage": S.get("stage"), "pct": S.get("pct"), "tested": pr.get("tested"), "alive": pr.get("alive"),
+                           "rate": pr.get("rate"), "ms": c.get("ms") if isinstance(c, dict) else None, "link": S.get("link", ""),
+                           "standby": len(POOL.get("standby") or []), "active": len(POOL.get("active") or []),
+                           "act": (S.get("act") or {}).get("act"), "mb": cfgdata.snapshot()["today"].get("total", 0) // 1000000,
+                           "saver": data_saver(), "mob": net_is_mobile(), "netchg": NETCHG["n"], "lg": LOAD.snapshot().get("f"),
+                           "threads": threading.active_count()})
+        except Exception as e:
+            T.err("series_loop", e)
+
+
+def evolve_extra():
+    """بخش‌های تازه‌ی گزارش: مصرف اینترنت، تغییر شبکه، نخ‌ها، همگام‌سازی صفحه، سری زمانی، تنظیمات واقعیِ در حال اجرا و خلاصه‌ی بالای گزارش."""
+    t = cfgdata.snapshot()
+    perf = T.snapshot().get("perf", {})
+    eff = {"profile": CUR[0], "mode": MODE[0], "eff_mode": eff_mode(MODE[0]), "speed": SPEED[0], "eff_speed": eff_speed(), "call": CALL[0], "tgonly": TGONLY[0],
+           "direct": DIRECT[0], "sysproxy_want": VPN_WANT[0], "failover": FAILOVER.is_set(), "data_budget_mb": data_budget_mb(), "data_saver": data_saver(),
+           "mobile": net_is_mobile(), "api_port": bool(APIPORT[0])}
+    dv = data_view()
+    summary = {"stage": S.get("stage"), "msg": (S.get("msg") or "")[:160], "profile": CUR[0], "mode": MODE[0], "link": S.get("link", ""),
+               "data_today_mb": dv["mb"], "data_budget_mb": dv["budget"], "mobile": dv["mobile"], "saver": dv["saver"],
+               "net_changes": NETCHG["n"], "switches": POOL.get("switches", 0), "standby": len(POOL.get("standby") or []),
+               "act": (S.get("act") or {}).get("act"), "app_started_s_ago": int(time.time() - T.T0)}
+    return {"summary": summary,
+            "data": dict(t, view=dv, per_test_overhead_bytes=cfgdata.OVERHEAD_TEST,
+                         note="بایت‌ها تخمینی‌ان (سربار TLS/TCP ثابت فرض شده)؛ سهم هر دسته و مرتبه‌ی بزرگی درسته"),
+            "net_changes": {"n": NETCHG["n"], "last_s_ago": int(time.time() - NETCHG["t"]) if NETCHG["t"] else None, "log": list(NETCHG["log"]),
+                            "now": FA_NET.get(_safe_fp().split("#")[0].split(":")[0], "?")},
+            "search_now": {"running": RUNNING[0], "pipeline_alive": bool(PIPE and PIPE.is_alive()), "prog": S.get("prog"), "stage": S.get("stage"),
+                           "step": S.get("step"), "pct": S.get("pct")},
+            "threads": _thread_census(),
+            "ui_sync": {k: perf.get(k) for k in perf if k.startswith("http_") or k == "ui_state_gap"},
+            "effective": eff,
+            "series": list(SERIES)}
 
 
 def evolve_ctx():
@@ -3708,10 +3917,11 @@ def evolve_ctx():
         _hints = _ct.hints(_trace, {"loadguard": LOAD.snapshot()})
     except Exception:
         _hints = []
-    return {"settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct")},
+    return {**evolve_extra(),
+            "settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct", "data_mb")},
             "resource": _res_snapshot(),
             "loadguard": LOAD.snapshot(),  # ضریب ترمز CPU، دیرکرد پردازه، سهم CPU (برای تنظیم سقف‌ها از روی گزارش واقعی)
-            "auto": {"profile": CUR[0], "api": bool(APIPORT[0]), "diag": dict(AUTO["diag"]), "act": S.get("act"), "cool_in_s": max(0, int(AUTO["cool"] - time.time())),
+            "auto": {"profile": CUR[0], "api": bool(APIPORT[0]), "diag": {k: v for k, v in AUTO["diag"].items() if not k.startswith("_")}, "act": S.get("act"), "cool_in_s": max(0, int(AUTO["cool"] - time.time())),
                      "decisions": list(AUTO["log"])},  # فوق هوشمند: فعالیت تشخیص‌داده‌شده و تصمیم‌های اخیر (بدون هیچ آدرس/میزبانی)
             "trace": _trace, "hints": _hints,  # خط زمانی رویدادها، خطاهای بلعیده‌شده، زمان‌سنجی، زمان‌بندی جستجوها، لحظه‌های مشکل + خلاصه‌ی خودکار
             "speed_now": SPEED[0], "speed_effective": sp, "speed_table": SPEEDS, "profile_now": CUR[0],
@@ -3833,8 +4043,16 @@ class H(http.server.BaseHTTPRequestHandler):
                    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
             return self.reply(200, html.encode(), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
         if u.path == "/api/state":
-            S["beat"] = time.time()
-            return self.reply(200, state())
+            # since=<هش>: تا وقتی وضعیت عوض نشده (حداکثر ۱۲ ثانیه) صبر می‌کنه و به‌محض تغییر جواب می‌ده؛ صفحه تقریباً لحظه‌ای هماهنگ می‌شه
+            since, t0 = (q.get("since") or [""])[0][:16], time.time()
+            while True:
+                S["beat"] = time.time()
+                d = state()
+                h = hashlib.md5(json.dumps({k: v for k, v in d.items() if k != "beat"}, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+                if not since or h != since or time.time() - t0 > 12 or QUITTING[0]:
+                    d["_h"] = h
+                    return self.reply(200, d)
+                time.sleep(0.2)
         if u.path == "/api/evolve" and _ev:
             return self.reply(200, _ev.status())
         if u.path == "/api/evolve/report" and _ev:  # فایل گزارش مهرشده برای Claude
@@ -4301,6 +4519,29 @@ def _proc_is_ours(pid):
         return False
 
 
+def _timed(fn):
+    def w(self):
+        t0 = time.time()
+        try:
+            return fn(self)
+        finally:
+            try:
+                route = (self.path or "").split("?")[0]
+                T.perf("http_state" if route == "/api/state" else "http_api" if route.startswith("/api/") else "http_page", time.time() - t0)
+                if route == "/api/state":
+                    now = time.time()
+                    g = now - HTTPS["last_state_t"] if HTTPS["last_state_t"] else None
+                    HTTPS["last_state_t"] = now
+                    if g is not None and g < 120:
+                        T.perf("ui_state_gap", g)  # فاصله‌ی دو درخواست وضعیت پشت‌سرهم (برای دیدن تأخیر همگام‌سازی صفحه)
+            except Exception:
+                pass
+    return w
+
+
+H.do_GET, H.do_POST = _timed(H.do_GET), _timed(H.do_POST)
+
+
 def main():
     global PORT, TOKEN, _lock
     DATA.mkdir(parents=True, exist_ok=True)
@@ -4328,6 +4569,7 @@ def main():
     except Exception:
         pass
     CUM.update(report.load(STATS_FILE))
+    cfgdata.load(str(DATA / "data.json"))
     load_block()
     load_localblock()
     restore_proxy()  # اگه دفعه‌ی قبل ناگهانی بسته شده بود، تنظیم قبلی پروکسی برمی‌گرده
@@ -4340,6 +4582,7 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=net_watch, daemon=True).start()
+    threading.Thread(target=series_loop, daemon=True).start()
     atexit.register(shutdown)
     S["beat"] = time.time()
     threading.Thread(target=startup_refresh, daemon=True).start()

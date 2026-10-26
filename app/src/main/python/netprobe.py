@@ -505,3 +505,28 @@ def net_kind():
     if kind == "mob":
         return "mob"                       # آدرس محلی نت همراه هر بار عوض می‌شه؛ توی شناسه نمیاد
     return (kind + ":" + lan) if (kind or lan) else ""
+
+
+def net_fp():
+    """اثرانگشتِ «لحظه‌ای» شبکه فقط برای تشخیص تغییر (بدون ترافیک): نوع/زیرشبکه + (اندروید) شناسه‌ی شبکه‌های واقعیِ سیستم.
+    با عوض شدن سیم‌کارت/اپراتور یا وصل شدن به یک وای‌فای دیگه شناسه‌ی شبکه‌ی اندروید عوض می‌شه حتی وقتی نوعش (mob/wifi) همونه.
+    خالی = قابل‌تشخیص نیست. این مقدار هیچ‌جا ذخیره یا به شناسه‌ی یادگیریِ شبکه اضافه نمی‌شه."""
+    try:
+        k = net_kind()
+    except Exception:
+        k = ""
+    h = ""
+    if os.environ.get("CFG_ANDROID") == "1":
+        try:
+            from com.chaquo.python import Python
+            cm = Python.getPlatform().getApplication().getSystemService("connectivity")
+            hs = []
+            for n in cm.getAllNetworks():
+                caps = cm.getNetworkCapabilities(n)
+                if caps is None or caps.hasTransport(4) or not caps.hasCapability(12):
+                    continue
+                hs.append(str(n.getNetworkHandle()))
+            h = ",".join(sorted(hs))
+        except Exception:
+            h = ""
+    return (k + "#" + h) if (k or h) else ""

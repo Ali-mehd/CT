@@ -5,6 +5,14 @@ import statistics, struct, subprocess, tempfile, time, urllib.error, urllib.pars
 import http.client
 import threading
 from concurrent.futures import ThreadPoolExecutor
+try:
+    import cfgdata
+except Exception:  # شمارنده اختیاریه؛ نبودنش نباید چیزی رو بشکنه
+    class cfgdata:  # noqa: N801
+        OVERHEAD_TEST = 6000
+        add = staticmethod(lambda *a, **k: None)
+        cat = staticmethod(lambda n: __import__('contextlib').nullcontext())
+        current = staticmethod(lambda: None)
 
 MAX_LINK = 4096
 ANDROID = bool(os.environ.get("CFG_ANDROID"))  # روی اندروید: DNS داخلی هسته و محیط کامل برای پروسه‌ها
@@ -713,7 +721,7 @@ def recvn(s, n):
     return b
 
 
-def fetch(port, url, timeout, limit=65536):
+def _fetch_raw(port, url, timeout, limit=65536):
     """GET از طریق SOCKS5 محلی. دامنه رو خودِ سرور resolve می‌کنه (بدون نشت DNS محلی)."""
     u = urllib.parse.urlsplit(url)
     host, https = u.hostname, u.scheme == "https"
@@ -778,6 +786,20 @@ SPEED_BIG_URLS = ["https://speed.cloudflare.com/__down?bytes=20000000", "https:/
                   "https://cachefly.cachefly.net/10mb.test"]
 
 
+def fetch(port, url, timeout, limit=65536):
+    """GET از طریق SOCKS5 محلی (با شمارش بایت برای شمارنده‌ی مصرف)."""
+    try:
+        r = _fetch_raw(port, url, timeout, limit)
+    except Exception:
+        cfgdata.add(700)  # دست‌دادنِ ناموفق هم مقداری مصرف داره
+        raise
+    try:
+        cfgdata.add(len(r[1]) + 450 + (5000 if url.startswith("https") else 0))
+    except Exception:
+        pass
+    return r
+
+
 def _stream(port, url, secs, res, i, timeout):
     """یک دانلود از طریق SOCKS؛ نرخ فقط از اولین بایتِ بدنه حساب می‌شه (بدون هزینه‌ی اتصال و دست‌دهی TLS)."""
     try:
@@ -836,6 +858,7 @@ def measure_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
             t.join(secs + timeout + 2)
         got = [r for r in res if r]
         total, dt = sum(n for n, _ in got), max((d for _, d in got), default=0)
+        cfgdata.add(total, "speed")
         if total > 100_000 and dt > 0.4:
             return int(total * 8 / 1000 / dt)
     return None
@@ -926,6 +949,7 @@ def measure_upload_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
             t.join(secs + timeout * 2 + 2)
         got = [r for r in res if r]
         total, dt = sum(n for n, _ in got), max((d for _, d in got), default=0)
+        cfgdata.add(total, "speed")
         if total >= 100_000 and dt > 0.4:
             return int(total * 8 / 1000 / dt)
     return None
@@ -1013,6 +1037,7 @@ def site_check(port, timeout=5):
 
 
 def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=False, up=False):
+    cfgdata.add(cfgdata.OVERHEAD_TEST)  # دست‌دادن به سرور مقصد (قبل از هر درخواستِ شمرده‌شده)
     port, tmp = free_port(), tempfile.mkdtemp(prefix="cfgscan_")
     env = dict(os.environ) if ANDROID else {k: v for k, v in os.environ.items()
            if k.upper() in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "HOME")}
@@ -1390,7 +1415,9 @@ def discover_github(opener, log=lambda m: None, stop=None, max_repos=10, per_rep
     def api(path):
         rq = urllib.request.Request(GH_API + path, headers={"User-Agent": "ConfigTool", "Accept": "application/vnd.github+json"})
         with opener.open(rq, timeout=15) as r:
-            return json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+            _b = r.read(2_000_000)
+            cfgdata.add(len(_b) + 5000, "sources")
+            return json.loads(_b.decode("utf-8", "replace"))
     since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 10 * 86400))
     repos, seen = [], set()
     for q in DISC_QUERIES:
@@ -1472,7 +1499,9 @@ def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy
                 def get(p, op=op):
                     rq = urllib.request.Request(p, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
                     with op.open(rq, timeout=9) as r:
-                        return r.read(MAX_SUB_BYTES).decode("utf-8", "replace")
+                        _b = r.read(MAX_SUB_BYTES)
+                        cfgdata.add(len(_b) + 5000, "sources")
+                        return _b.decode("utf-8", "replace")
                 ls, subs = channel_links(u, get)
                 for sb in subs:
                     try:
@@ -1486,10 +1515,12 @@ def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy
                 return
             if kind == "pin":
                 raw = get_pinned(a[0], a[1], a[2], ctx, 8, a[3])
+                cfgdata.add(len(raw) + 5000, "sources")
             else:
                 req = urllib.request.Request(a, headers={"User-Agent": "Mozilla/5.0"})
                 with (via if kind == "via" else direct).open(req, timeout=8) as r:
                     raw = r.read(MAX_SUB_BYTES)
+                cfgdata.add(len(raw) + 5000, "sources")
             ls = list(dict.fromkeys(extract_links(raw.decode("utf-8", "replace"))))
             if ls and not done[u].is_set():
                 got[u] = ls
