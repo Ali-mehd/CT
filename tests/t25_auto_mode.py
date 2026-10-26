@@ -28,6 +28,8 @@ if os.path.exists(xr):
         assert any(f["host"] == "stun.example.org" for f in list(W.ACT.flows)), list(W.ACT.flows)[-3:]
         assert not any(f["port"] == W.APIPORT[0] for f in list(W.ACT.flows))
         # پروفایل غیر auto: هیچ API/لاگی نباید باشه
+        # نردبان اتصال اول «plain» رو امتحان می‌کنه؛ این حالت هم باید API داشته باشه (باگ واقعیِ گزارش ۲۳:۲۷)
+        W.start_xray([c], "auto", True); assert W.APIPORT[0] > 0 and A.query_stats(xr, W.APIPORT[0]) is not None
         W.start_xray([c], "speed"); assert W.APIPORT[0] == 0 and W.XRAY_PROC.stdout is None
         print("2) REAL xray via start_xray('auto'): stats API answers, access log feeds activity, other profiles unchanged OK")
     finally:
@@ -142,4 +144,48 @@ print("6) supervisor: bulk transfer ≠ cut, call/secure hold through jitter, br
 src = open("cfgweb.py", encoding="utf-8").read()
 assert "وسط انتقال حجیم طبیعیه" in src and "وسط {'تماس' if act == 'call' else 'کار حساس'}" in src
 print("7) warning texts match the real policy OK")
+# ۸) زنجیره‌ی کامل با xray واقعی و ترافیک واقعی: آپلودِ پیوسته ← auto_watch وضعیت «upload» رو نشون می‌ده و شمارنده‌ها پر می‌شن
+if os.path.exists(xr):
+    import http.server, socketserver
+    class Sink(http.server.BaseHTTPRequestHandler):
+        def do_POST(s):
+            n = int(s.headers.get("Content-Length", 0))
+            while n > 0:
+                n -= len(s.rfile.read(min(65536, n)))
+            s.send_response(200); s.end_headers(); s.wfile.write(b"ok")
+        def log_message(s, *a): pass
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 19997), Sink); threading.Thread(target=srv.serve_forever, daemon=True).start()
+    cfg = {"log": {"loglevel": "warning", "access": ""}, "stats": {}, "api": {"tag": "api", "services": ["StatsService"]},
+           "policy": {"system": {"statsOutboundUplink": True, "statsOutboundDownlink": True}},
+           "inbounds": [{"tag": "socks-in", "listen": "127.0.0.1", "port": 19938, "protocol": "socks", "settings": {"auth": "noauth", "udp": True}},
+                        {"tag": "api-in", "listen": "127.0.0.1", "port": 19940, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}}],
+           "outbounds": [{"tag": "proxy-1", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+           "routing": {"rules": [{"type": "field", "inboundTag": ["api-in"], "outboundTag": "api"}, {"type": "field", "network": "tcp,udp", "outboundTag": "proxy-1"}]}}
+    p = subprocess.Popen([xr, "run", "-c", "stdin:"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    p.stdin.write(json.dumps(cfg).encode()); p.stdin.close()
+    setup(); W.ACT.reset(); W.XRAY_PROC, W.APIPORT[0], W.SOCKS = p, 19940, 19938
+    W.find_xray = lambda: xr
+    threading.Thread(target=W.ACT.reader, args=(p.stdout, lambda: p is not W.XRAY_PROC), daemon=True).start()
+    for _ in range(50):
+        try: socket.create_connection(("127.0.0.1", 19938), 0.2).close(); break
+        except OSError: time.sleep(0.1)
+    open("/tmp/up.bin", "wb").write(os.urandom(2_500_000))
+    g = W.GEN[0]
+    th = threading.Thread(target=W.auto_watch, args=(g, "auto", True), daemon=True); th.start()
+    cu = subprocess.Popen(["curl", "-s", "--socks5-hostname", "127.0.0.1:19938", "--limit-rate", "100k", "-X", "POST", "--data-binary", "@/tmp/up.bin",
+                           "-o", "/dev/null", "http://127.0.0.1:19997/up"])
+    try:
+        seen = None
+        for _ in range(60):
+            time.sleep(0.5)
+            a = W.S.get("act")
+            if a and a["act"] == "upload": seen = a; break
+        assert seen, (W.S.get("act"), W.AUTO["diag"], list(W.AUTO["log"])[-3:])
+        assert W.AUTO["diag"]["stats_ok"] >= 3 and W.AUTO["diag"]["stats_fail"] == 0 and not W.AUTO["diag"]["err"], W.AUTO["diag"]
+        assert any("آپلود" in m for _, m in W.AUTO["log"]), list(W.AUTO["log"])
+        print("8) REAL chain (xray stats + log -> auto_watch): a sustained upload is shown as 'upload' with live KB/s OK")
+    finally:
+        W.GEN[0] += 1; cu.kill(); p.kill(); srv.shutdown(); th.join(5)
+else:
+    print("8) (skipped: no xray binary)")
 print("ALL OK")
