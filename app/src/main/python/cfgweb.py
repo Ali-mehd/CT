@@ -664,7 +664,7 @@ def start_xray(sel, profile, plain=False):
         return start_singbox(sel[:1])
     sel = [c for c in sel if c["proto"] not in cfgscan.SB_PROTOS] or sel
     xray = find_xray()
-    want_api = profile == "auto" and not plain
+    want_api = profile == "auto"  # plain فقط fragment/mux رو خاموش می‌کنه؛ آمار و لاگ ربطی بهش نداره (نردبان اتصال اول plain رو امتحان می‌کنه)
     cfg, sel = cfgforge.make_client(sel, profile, None, [], SOCKS, HTTP,
                                     probe_interval="3s" if len(sel) > 1 else "30s", strategy="leastPing", plain=plain,
                                     block_ads=True, direct_country=DIRECT[0], api_port=1 if want_api else 0)
@@ -1692,7 +1692,7 @@ def supervisor(gen, profile, sysproxy, mode):
 
 # ── فوق هوشمند: تصمیم بر اساس «الان کاربر چی‌کار می‌کنه» ─────────────────────────────────────────────
 CRAWL = {"upload": 900, "download": 2500}  # کیلوبیت بر ثانیه؛ زیر این مقدار، انتقال حجیم «لاک‌پشتی» حساب می‌شه
-AUTO = {"crawl_t0": 0.0, "cool": 0.0, "tp": {}, "t_cq": 0.0, "call_poor": 0, "call_mos": 0.0, "log": deque(maxlen=30)}
+AUTO = {"diag": {"ticks": 0, "stats_ok": 0, "stats_fail": 0, "flows": 0, "err": ""}, "crawl_t0": 0.0, "cool": 0.0, "tp": {}, "t_cq": 0.0, "call_poor": 0, "call_mos": 0.0, "log": deque(maxlen=30)}
 AUTO_LOCK = threading.Lock()  # فقط یک عملیات سنجش/جابه‌جاییِ فوق هوشمند هم‌زمان
 HINT = {"idle": "", "normal": "", "interactive": "برای گشت‌وگذار تأخیر کم و ثبات مهمه؛ اگه نوسان ادامه پیدا کنه سرور بهتر می‌گردم.",
         "download": "دانلود حجیم: اگه سرعت خیلی کم بمونه سرور سریع‌تر می‌سنجم.",
@@ -1834,31 +1834,43 @@ def _auto_policy(gen, profile, info):
 
 
 def auto_watch(gen, profile, sysproxy):
-    """هر ۳ ثانیه فعالیت کاربر رو می‌سنجه و سیاست مناسبش رو اعمال می‌کنه (فقط پروفایل «فوق هوشمند»)."""
-    xray, last, was_call = find_xray(), "idle", False
+    """هر ۳ ثانیه فعالیت کاربر رو می‌سنجه و سیاست مناسبش رو اعمال می‌کنه (فقط پروفایل «فوق هوشمند»).
+    هر خطای غیرمنتظره فقط همون دور رو می‌پرونه و ثبت می‌شه؛ ناظر نمی‌میره."""
+    xray, last = find_xray(), "idle"
     AUTO.update(crawl_t0=0.0, call_poor=0, t_cq=0.0)
+    AUTO["diag"] = {"ticks": 0, "stats_ok": 0, "stats_fail": 0, "flows": 0, "err": ""}
+    D = AUTO["diag"]
+    auto_log(f"فوق هوشمند فعال شد (API آمار: {'آماده' if APIPORT[0] else 'نیست'})")
     try:
         while GEN[0] == gen and S["stage"] == "connected" and not STOP.is_set():
             time.sleep(3)
             if GEN[0] != gen or S["stage"] != "connected":
                 return
-            proc = XRAY_PROC
-            if proc is None or proc.poll() is not None or not APIPORT[0]:
-                S["act"] = None
-                continue
-            info = ACT.tick(cfgact.query_stats(xray, APIPORT[0]))
-            act = info["act"]
-            S["act"] = dict(info, hint=HINT.get(act, ""), locked=MODE[0] == "off")
-            if act != last:
-                auto_log(f"فعالیت: {cfgact.FA[last]} ← {cfgact.FA[act]} ({info.get('reason', '')})")
-                if last == "call" and AUTO["call_poor"] >= 2 and MODE[0] != "off" and time.time() > AUTO["cool"] and calm_ok():
-                    AUTO["cool"] = time.time() + 300
-                    threading.Thread(target=_post_call_improve, args=(gen, profile), daemon=True).start()
-                if last == "call":
-                    AUTO["call_poor"] = 0
-                last = act
-            if MODE[0] != "off":
-                _auto_policy(gen, profile, info)
+            try:
+                proc = XRAY_PROC
+                if proc is None or proc.poll() is not None or not APIPORT[0]:
+                    S["act"] = None
+                    continue
+                tot = cfgact.query_stats(xray, APIPORT[0])
+                D["ticks"] += 1
+                D["stats_ok" if tot else "stats_fail"] += 1
+                D["flows"] = len(ACT.flows)
+                info = ACT.tick(tot)
+                act = info["act"]
+                S["act"] = dict(info, hint=HINT.get(act, ""), locked=MODE[0] == "off")
+                if act != last:
+                    auto_log(f"فعالیت: {cfgact.FA[last]} ← {cfgact.FA[act]} ({info.get('reason', '')})")
+                    if last == "call" and AUTO["call_poor"] >= 2 and MODE[0] != "off" and time.time() > AUTO["cool"] and calm_ok():
+                        AUTO["cool"] = time.time() + 300
+                        threading.Thread(target=_post_call_improve, args=(gen, profile), daemon=True).start()
+                    if last == "call":
+                        AUTO["call_poor"] = 0
+                    last = act
+                if MODE[0] != "off":
+                    _auto_policy(gen, profile, info)
+            except Exception as e:
+                D["err"] = f"{type(e).__name__}: {str(e)[:80]}"
+                T.err("auto_watch", e)
     finally:
         if GEN[0] == gen:
             S["act"] = None
@@ -3699,7 +3711,7 @@ def evolve_ctx():
     return {"settings": {k: st.get(k) for k in ("profile", "mode", "speed", "quick", "sysproxy", "tgonly", "autosrc", "call", "direct")},
             "resource": _res_snapshot(),
             "loadguard": LOAD.snapshot(),  # ضریب ترمز CPU، دیرکرد پردازه، سهم CPU (برای تنظیم سقف‌ها از روی گزارش واقعی)
-            "auto": {"profile": CUR[0], "api": bool(APIPORT[0]), "act": S.get("act"), "cool_in_s": max(0, int(AUTO["cool"] - time.time())),
+            "auto": {"profile": CUR[0], "api": bool(APIPORT[0]), "diag": dict(AUTO["diag"]), "act": S.get("act"), "cool_in_s": max(0, int(AUTO["cool"] - time.time())),
                      "decisions": list(AUTO["log"])},  # فوق هوشمند: فعالیت تشخیص‌داده‌شده و تصمیم‌های اخیر (بدون هیچ آدرس/میزبانی)
             "trace": _trace, "hints": _hints,  # خط زمانی رویدادها، خطاهای بلعیده‌شده، زمان‌سنجی، زمان‌بندی جستجوها، لحظه‌های مشکل + خلاصه‌ی خودکار
             "speed_now": SPEED[0], "speed_effective": sp, "speed_table": SPEEDS, "profile_now": CUR[0],
