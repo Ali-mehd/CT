@@ -122,6 +122,8 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
  <p class="hint auto" id="h-sys" hidden>مرورگر و بیشتر برنامه‌ها خودکار از اتصال استفاده می‌کنن و با قطع اتصال یا بستن برنامه به حالت قبل برمی‌گردن. اگه خاموش باشه باید پروکسی رو دستی روی آدرسی که بعد از اتصال نوشته می‌شه بذاری.</p>
  <div class="row"><span>سایت‌های داخلی مستقیم <button class="i" data-t="h-dir">ⓘ</button></span>
   <select id="dir" style="background:#12151a;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 8px;font:inherit;font-size:13px"><option value="">هیچ</option><option value="ir">ایران</option><option value="az">آذربایجان</option><option value="tr">ترکیه</option><option value="ru">روسیه</option><option value="cn">چین</option></select></div>
+ <div class="row"><span>سقف مصرف روزانه‌ی جستجو <button class="i" data-t="h-dm">ⓘ</button></span><select id="dmb" style="background:#12151a;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:2px 8px;font:inherit;font-size:13px"><option value="auto">خودکار</option><option value="50">۵۰ مگابایت</option><option value="150">۱۵۰ مگابایت</option><option value="400">۴۰۰ مگابایت</option><option value="1000">۱ گیگابایت</option><option value="0">نامحدود</option></select></div>
+ <p class="hint" id="h-dm" hidden>جستجوی سرور و دانلود فهرست منبع‌ها اینترنت مصرف می‌کنه. «خودکار»: روی نت همراه ۱۵۰ مگابایت در روز، روی مودم/وای‌فای بدون سقف. وقتی سقف پر بشه کارهای پس‌زمینه می‌ایستن؛ اتصال فعلی و نظارتش ادامه داره. مصرف امروز رو در «پیشرفته ← وضعیت شبکه و تشخیص» ببین.</p>
  <p class="hint" id="h-dir" hidden>سایت‌ها و IPهای کشور انتخابی بدون پروکسی و مستقیم باز می‌شن؛ سریع‌تر، و ترافیک غیرعادی کمتری از پروکسی می‌ره (مثلاً بانک‌ها). تبلیغ‌ها و ردیاب‌ها همیشه مسدود می‌شن.</p>
  <div class="row auto"><span>جستجو <button class="i" data-t="h-q">ⓘ</button></span><span class="seg"><label><input type="radio" name="q" value="1" checked><span>سریع</span></label><label><input type="radio" name="q" value="0"><span>کامل</span></label></span></div>
  <p class="hint auto" id="h-q" hidden>کانفیگ‌ها از شبکه‌ی خودت تست می‌شن و به محض پیدا شدن اولین سرور سالم وصل می‌شی. «سریع» تا حدود ۱٫۵ دقیقه و «کامل» تا حدود ۴ دقیقه (اگه چیزی پیدا نشه تا ۱۵ دقیقه) دنبال سرورهای بیشتر می‌گرده.</p>
@@ -152,6 +154,7 @@ html.hc{--tx:#fff;--mut:#d4dbe6;--line:#556072}html.hc body{font-weight:600}
 <div class="m" id="ddiag" style="margin-top:6px"></div>
 <div class="m" id="dwhy" style="margin-top:6px"></div>
 <pre id="dlog" style="direction:ltr;text-align:left;white-space:pre-wrap;max-height:200px;overflow:auto;font-size:11.5px;background:#12151a;border:1px solid var(--line);border-radius:8px;padding:8px;margin:8px 0"></pre>
+<div class="m" id="ddata" style="margin-top:8px"></div>
 <button class="btn" id="dcopy" style="margin-right:0">کپی گزارش تشخیص</button>
 <div class="row" style="margin-top:12px"><span>سنجش شبکه <button class="i" data-t="h-np">ⓘ</button></span><label class="sw"><input type="checkbox" id="npon" checked><span></span></label></div>
 <p class="hint" id="h-np" hidden>برای فهمیدن اینکه کدوم پورت، UDP یا فیلتر روی شبکه‌ی تو بازه، برنامه چند اتصال کوچک (TCP، TLS، UDP) به IPهای ثابتِ کلودفلر، گوگل و Quad9 می‌زنه و برای تشخیص اپراتور (ASN) یک پرسش DNS به OpenDNS و Team Cymru می‌فرسته. چیزی از کانفیگ‌ها یا رمزهات نمی‌ره، ولی اون سرویس‌ها IP عمومی تو رو می‌بینن. خاموش‌کردنش فقط سنجش رو حذف می‌کنه و برنامه مثل قبل کار می‌کنه (فقط ترتیب تست‌ها هوشمندانه نمی‌شه).</p></div></details>
@@ -205,14 +208,15 @@ function dtext(s){const n=s.net,d=s.diag||{},L=[];L.push("گزارش تشخیص 
  if(n){L.push("شبکه: "+(n.id||"نامعلوم")+(n.ok?"":" (اینترنت/سنجش ناموفق)"));L.push("پورت‌ها: "+Object.keys(n.ports||{}).map(p=>p+"="+(YN[n.ports[p]]||n.ports[p])).join(" "));L.push("UDP="+(YN[n.udp]||n.udp)+" QUIC="+(YN[n.quic]||n.quic)+" فیلتر SNI="+(YS[n.sni]||n.sni)+" fragment="+(YF[n.frag]||n.frag)+(n.clock?" | "+n.clock:""))}else L.push("سنجش شبکه: انجام نشده");
  L.push("لینک فعلی: "+(LK[s.link]||s.link||"—")+" | تعداد سرورهای فهرست: "+(Array.isArray(s.servers)?s.servers.length:"؟")+" | کنارگذاشته (بازبینی): "+(s.bench||0));
  L.push("تست‌شده "+(d.tested||0)+": کارکرده "+(d.ok||0)+"، جواب نداده "+(d.no_reach||0)+"، بدون ترافیک "+(d.no_traffic||0)+"، ناامن "+(d.unsafe||0)+" | از قرنطینه/حذف: "+JSON.stringify(d.skip||{}));
- L.push("حالت: "+(s.profile||"")+" / "+(s.mode||"")+" | تماس: "+((s.call||{}).on?"روشن":"خاموش"));if(s.profile=="auto")L.push("فوق هوشمند: "+(s.act?("الان «"+s.act.fa+"» — "+(s.act.reason||"")+" | آپلود "+Math.round((s.act.up_kbit||0)/8)+" KB/s، دانلود "+Math.round((s.act.dn_kbit||0)/8)+" KB/s"):"فعالیتی تشخیص داده نشد (اتصال نیست یا آمار در دسترس نیست)"));
+ L.push("حالت: "+(s.profile||"")+" / "+(s.mode||"")+" | تماس: "+((s.call||{}).on?"روشن":"خاموش"));if(s.data)L.push("مصرف امروز: "+s.data.mb+" مگابایت | سقف: "+(s.data.budget||"ندارد")+" | نت همراه: "+(s.data.mobile?"بله":"خیر")+" | صرفه‌جویی فعال: "+(s.data.saver?"بله":"خیر"));
+  if(s.profile=="auto")L.push("فوق هوشمند: "+(s.act?("الان «"+s.act.fa+"» — "+(s.act.reason||"")+" | آپلود "+Math.round((s.act.up_kbit||0)/8)+" KB/s، دانلود "+Math.round((s.act.dn_kbit||0)/8)+" KB/s"):"فعالیتی تشخیص داده نشد (اتصال نیست یا آمار در دسترس نیست)"));
  L.push("--- لاگ ---");(s.log||[]).slice(-40).forEach(x=>L.push(x));return dredact(L.join("\n"))}
 function dcopy(t){const ok=()=>toast("گزارش کپی شد (آدرس‌ها حذف شدن)");try{navigator.clipboard.writeText(t).then(ok,()=>{throw 0})}catch(e){const a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();try{document.execCommand("copy");ok()}catch(_){toast("کپی نشد؛ متن پایین صفحه رو دستی انتخاب کن")}a.remove()}}
 const el=(t,txt,cls)=>{const e=document.createElement(t);if(txt!=null)e.textContent=txt;if(cls)e.className=cls;return e};
 function modes(){const c=$("modes");c.textContent="";for(const k in M){const b=el("button",null,"mode"+(k==prof?" s":""));b.append(M[k][0]);const s=el("small",M[k][1]);b.appendChild(s);b.onclick=()=>{prof=k;modes();save()};c.appendChild(b)}$("mdesc").textContent=MD[prof];$("spnote").style.display=prof=="auto"?"block":"none"}
 function tabs(){const t=$("tabs");t.textContent="";TB.forEach(([k,l])=>{const b=el("button",l,"tab"+(k==tab?" s":""));b.onclick=()=>{tab=k;tabs()};t.appendChild(b)});document.querySelectorAll(".pane").forEach(p=>p.className="pane"+(p.dataset.p==tab?" s":""))}
 document.querySelectorAll(".i").forEach(b=>b.onclick=()=>{const h=$(b.dataset.t);h.hidden=!h.hidden});
-const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked,netprobe:$("npon").checked,evolve_ok:$("evok").checked});
+const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked,netprobe:$("npon").checked,evolve_ok:$("evok").checked,data_mb:$("dmb").value=="auto"?null:parseInt($("dmb").value)});
 function toast(m){let t=$("toast");if(!t){t=el("div",null,"toast");t.id="toast";t.setAttribute("role","status");document.body.appendChild(t)}t.textContent=m;t.className="toast on";clearTimeout(toast.h);toast.h=setTimeout(()=>t.className="toast",6000)}
 const FSZ=[["کوچک",0.9],["معمولی",1],["بزرگ",1.15],["خیلی بزرگ",1.3],["درشت",1.5]];let obfs=1;
 function applyLook(x){x=x||{};const f=typeof x.fs=="number"?x.fs:1;obfs=f;document.body.style.zoom=f==1?"":f;document.documentElement.classList.toggle("hc",!!x.hc)}
@@ -222,7 +226,7 @@ function showOb(s){$("ob").hidden=false;$("obhc").checked=document.documentEleme
 $("obhc").onchange=()=>document.documentElement.classList.toggle("hc",$("obhc").checked);
 $("obok").onclick=()=>{const b={fs:obfs,hc:$("obhc").checked,onboarded:true};if(!$("obnt").hidden)b.notemp=document.querySelector("input[name=obnt]:checked").value;api("/api/settings",b).then(()=>{$("ob").hidden=true}).catch(()=>{$("ob").hidden=true})};
 const save=()=>api("/api/settings",cur()).then(r=>{if(r&&r.applied&&r.applied.length)toast(r.applied.join("  •  "));return r}).catch(()=>{});
-function applySettings(x){if(!x)return;if(x.profile)prof=M[x.profile]?x.profile:"auto";
+function applySettings(x){if(!x)return;$("dmb").value=(x.data_mb===undefined||x.data_mb===null)?"auto":String(x.data_mb);if(x.profile)prof=M[x.profile]?x.profile:"auto";
  if(x.mode){const mm=x.mode=="off"?"off":"stable";document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==mm)}
  if(x.speed)document.querySelectorAll("input[name=sp]").forEach(r=>r.checked=r.value==x.speed);
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
@@ -258,6 +262,10 @@ function render(s){S=s;const st=s.stage,c=s.connected;
   $("ddiag").textContent="تست‌شده "+(d.tested||0)+": کارکرده "+(d.ok||0)+"، جواب نداده "+(d.no_reach||0)+"، جواب داده ولی ترافیک رد نشد "+(d.no_traffic||0)+"، ناامن "+(d.unsafe||0)+(d.skip&&d.skip.quarantine?"، از قرنطینه رد شد "+d.skip.quarantine:"");
   let w="";if(d.tested>=8&&!d.ok){w=d.no_reach>=0.8*d.tested?"بیشترِ سرورها اصلاً جواب ندادن: معمولاً یعنی پورت/IP فیلتره یا اینترنت قطعه.":d.no_traffic>=0.5*d.tested?"سرورها جواب دادن ولی ترافیک واقعی رد نشد: معمولاً فیلتر عمیق (DPI) یا محدودیت.":"هیچ سرور سالمی پیدا نشد؛ منبع‌ها یا شبکه رو بررسی کن."}$("dwhy").textContent=w;
   $("dlog").textContent=(s.log||[]).join("\n")});
+ once("data",[s.data],()=>{const e=$("ddata");const d=s.data;if(!d){e.textContent="";return}
+  const n=x=>(x||0).toLocaleString("fa",{maximumFractionDigits:1}),c=d.cats||{};
+  e.textContent="مصرف اینترنتِ خودِ برنامه امروز: "+n(d.mb)+" مگابایت (جستجو "+n(c.scan)+" · سرعت‌سنجی "+n(c.speed)+" · منابع "+n(c.sources)+" · نظارت "+n(c.probe)+" · جایگزین‌ها "+n(c.standby)+")"+(d.budget?" | سقف روزانه: "+n(d.budget)+" مگابایت":" | بدون سقف")+(d.mobile?" | الان روی نت همراهی":"")+(c.user?" | ترافیک خودت از تونل: "+n(c.user)+" مگابایت":"")+(d.saver?" — سقف پر شده؛ کارهای پس‌زمینه متوقفه.":"")});
+ once("netchg",[s.netchg],()=>{const e=$("sub2");if(s.netchg&&Date.now()/1000-s.netchg.t<25)toast("شبکه عوض شد: "+s.netchg.from+" ← "+s.netchg.to+" — دارم دوباره می‌سنجم")});
  once("act",[s.act,s.profile,s.stage,s.mode],()=>{const e=$("actln");if(s.profile!="auto"||s.stage!="connected"){e.hidden=true;return}
   e.hidden=false;e.textContent="";const a=s.act;
   if(!a){e.textContent="فوق هوشمند: دارم فعالیتت رو یاد می‌گیرم …";return}
@@ -305,7 +313,7 @@ $("go").onclick=()=>{const st=S.stage;
  if(st=="connected"||st=="running"){if(st=="running"){cancelling=1;$("go").disabled=true;$("go").textContent="در حال لغو…";setTimeout(()=>{cancelling=0},15000)}return api("/api/stop",{})}
  if(window.AndroidBridge&&$("sysp").checked)AndroidBridge.ensureVpn();$("st").textContent="در حال شروع …";
  api("/api/start",{profile:prof,speed:document.querySelector("input[name=sp]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",sysproxy:$("sysp").checked,mode:document.querySelector("input[name=mode]:checked").value,direct:$("dir").value,tgonly:$("tgonly").checked})};
-document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#tgonly,#autosrc,#npon,#evok").forEach(e=>e.addEventListener("change",save));
+document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#dmb,#tgonly,#autosrc,#npon,#evok").forEach(e=>e.addEventListener("change",save));
 window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/closing?t="+T,"")}catch(e){}});
 $("discb").onclick=()=>api("/api/discover",{}).then(tick);
 $("learnreset").onclick=()=>{if(confirm("یادگیری پاک بشه؟"))api("/api/learn_reset",{}).then(tick)};
@@ -356,6 +364,11 @@ let devT=0;
 function devOn(){const e=$("sec-evo");if(e&&!e.dataset.off)e.hidden=false}
 try{if(localStorage.getItem("dev")=="1")devOn()}catch(e){}
 document.querySelector(".top").onclick=()=>{if(++devT>=5){devT=0;try{localStorage.setItem("dev","1")}catch(e){}devOn();tab="adv";tabs();const e=$("sec-evo");if(e&&!e.hidden){e.open=true;e.scrollIntoView()}}};
-const tick=()=>api("/api/state").then(render).catch(()=>{$("st").textContent="ارتباط با برنامه قطع شده؛ پنجره رو ببند و دوباره باز کن."});
-tick();setInterval(tick,1500);
+let sh="",tctl=null,ttm=null;
+const tick=long=>{ // long=true: سرور تا وقتی چیزی عوض نشده جواب نمی‌ده (به‌روزرسانی تقریباً لحظه‌ای)؛ بدون آرگومان = همین الان بگیر (بعد از هر کلیک)
+ if(tctl)tctl.abort();clearTimeout(ttm);const c=tctl=new AbortController();
+ fetch("/api/state"+((long===true&&sh)?"?since="+sh:""),{headers:{"X-T":T},signal:c.signal}).then(r=>r.json()).then(d=>{if(c!==tctl)return;sh=d._h||"";render(d);ttm=setTimeout(()=>tick(true),200)})
+ .catch(()=>{if(c!==tctl)return;$("st").textContent="ارتباط با برنامه قطع شده؛ پنجره رو ببند و دوباره باز کن.";sh="";ttm=setTimeout(()=>tick(true),1500)})};
+tick();
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)tick()});
 </script></body></html>
