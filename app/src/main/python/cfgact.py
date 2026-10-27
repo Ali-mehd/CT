@@ -134,12 +134,17 @@ def _has(s, words):
     return any(w in s for w in words)
 
 
-def classify(flows, rates, procs=None, now=None):
+def classify(flows, rates, procs=None, now=None, mem=None):
     """تشخیص خام از روی اتصال‌های ۱۵ ثانیه‌ی اخیر و نرخ‌ها ← (act, reason, detail).
     اولویت: تماس/زنده > کار حساس > آپلود/دانلود حجیم > گشت‌وگذار > عادی > بی‌کار.
     procs: {sport: اسم برنامه} (اختیاری)."""
     now = time.time() if now is None else now
     procs = procs or {}
+    mem = mem or {}
+    # اتصال‌های ویدیو/شبکه‌ی اجتماعی/بانک چند دقیقه باز می‌مونن (HTTP/2 و QUIC-مانند)؛ «اتصال تازه» توی لاگ نمی‌آد ولی ترافیک ادامه داره.
+    # پس علاوه بر ۱۵ ثانیه‌ی اخیر، آخرین زمانِ دیدنِ هر دسته رو هم نگه می‌داریم.
+    inter_recent = now - mem.get("inter", 0.0) <= 90
+    sens_recent = now - mem.get("sens", 0.0) <= 120
     fl = [f for f in flows if now - f["t"] <= 15]
     up15, dn15 = rates.avg(15)
     up5, dn5 = rates.avg(6)
@@ -155,7 +160,7 @@ def classify(flows, rates, procs=None, now=None):
         return "call", "تماس تصویری/صوتی (میزبان تماس)", detail
 
     sens = [f for f in fl if _has(f["host"], SENSITIVE_HOST)]
-    if sens or any(_has(n.lower(), SENSITIVE_PROC) for n in pset):
+    if sens or any(_has(n.lower(), SENSITIVE_PROC) for n in pset) or (sens_recent and up15 + dn15 >= 8):
         return "secure", "اتصال حساس (بانک/پرداخت/رمز/کنترل از راه دور)", detail
 
     inter = [f for f in fl if _has(f["host"], INTERACTIVE_HOST)]
@@ -163,9 +168,9 @@ def classify(flows, rates, procs=None, now=None):
     heavy_dn = dn15 >= DN_MIN and dn15 >= DN_RATIO * max(up15, 1.0) and dn5 >= DN_MIN * 0.5
     if heavy_up:
         return "upload", f"آپلود پیوسته (~{round(up15 / 8)} KB/s)", detail
-    if heavy_dn and not (inter and len(inter) >= len(fl) / 2):  # ویدیو/شبکه‌ی اجتماعی پرحجم «گشت‌وگذار»ه نه دانلودِ فایل
+    if heavy_dn and not (inter or inter_recent):  # ویدیو/شبکه‌ی اجتماعی پرحجم «گشت‌وگذار»ه نه دانلودِ فایل (اتصال‌های بازِ چند دقیقه‌ای هم حساب می‌شن)
         return "download", f"دانلود پیوسته (~{round(dn15 / 8)} KB/s)", detail
-    if inter or heavy_dn:
+    if inter or heavy_dn or (inter_recent and up15 + dn15 >= 24):
         return "interactive", "گشت‌وگذار/ویدیو (تأخیر کم مهمه)", detail
     if fl or up15 + dn15 >= 16:
         return "normal", "استفاده‌ی عادی", detail
@@ -275,11 +280,13 @@ class Sampler:
         self.tracker = Tracker()
         self.lock = threading.Lock()
         self.pcache = {}  # پورت مبدأ ← (نام، زمان)
+        self.mem = {"inter": 0.0, "sens": 0.0}  # آخرین زمانِ دیدنِ میزبانِ ویدیو/اجتماعی و حساس
 
     def reset(self):
         """قطع اتصال: وضعیت قبلی (مثلاً «تماس») نباید روی اتصال بعدی اثر بذاره."""
         with self.lock:
             self.flows.clear()
+        self.mem = {"inter": 0.0, "sens": 0.0}
         self.rates = Rates()
         self.tracker = Tracker()
         self.pcache.clear()
@@ -289,6 +296,10 @@ class Sampler:
         if f:
             with self.lock:
                 self.flows.append(f)
+                if _has(f["host"], INTERACTIVE_HOST):
+                    self.mem["inter"] = f["t"]
+                if _has(f["host"], SENSITIVE_HOST):
+                    self.mem["sens"] = f["t"]
 
     def reader(self, stream, stop):
         """خروجی xray رو (حتماً باید تخلیه بشه تا xray گیر نکنه) تا آخر می‌خونه."""
@@ -322,6 +333,6 @@ class Sampler:
             procs = {p: self.pcache[p][0] for p in ports if p in self.pcache}
             for p in [p for p, (_, t) in self.pcache.items() if now - t > 300]:
                 self.pcache.pop(p, None)
-        raw, why, det = classify(fl, self.rates, procs, now)
+        raw, why, det = classify(fl, self.rates, procs, now, self.mem)
         self.tracker.update(raw, why, det, now)
         return self.tracker.info(now)

@@ -1931,7 +1931,9 @@ def _auto_policy(gen, profile, info):
     if act in CRAWL:
         up15, dn15 = ACT.rates.avg(20)
         cur = up15 if act == "upload" else dn15
-        if info["since"] >= 15 and cur < CRAWL[act]:
+        cur6 = (ACT.rates.avg(6)[0] if act == "upload" else ACT.rates.avg(6)[1])
+        # «لاک‌پشتی» یعنی انتقال واقعاً در جریانه ولی کنده (پایدار و بالای حداقل). نرخ نزدیک صفر یعنی انتقال تموم/متوقف شده نه کند.
+        if info["since"] >= 30 and 64 <= cur < CRAWL[act] and cur6 >= 48:
             AUTO["crawl_t0"] = AUTO["crawl_t0"] or now
         else:
             AUTO["crawl_t0"] = 0.0
@@ -3823,6 +3825,33 @@ def state():
     return d
 
 
+_SAFE_PATH = re.compile(r"[\w\s:\\./()-]+")  # فقط مسیر امن؛ بدون هیچ نویسه‌ی خاصِ shell
+
+
+def build_uninstall_cmd(root, exe=None):
+    """اسکریپت «حذف کامل» ویندوز (متن .cmd) یا None اگه مسیر امن نیست. نکته‌های واقعی که قبلاً باعث موندنِ ردپا می‌شدن:
+    ۱) دستورِ حذف با پوشه‌ی جاریِ خودِ برنامه اجرا می‌شد و همون پوشه رو قفل می‌کرد (پوشه‌ی خالی می‌موند)؛ حالا از %TEMP% اجرا می‌شه.
+    ۲) پردازه‌های WebView2/xray هنوز فایل‌ها رو قفل داشتن و فقط یک بار تلاش می‌شد؛ حالا قبلش می‌بندیمشون و تا ۱۵ بار دوباره تلاش می‌کنه.
+    ۳) خودِ فایل ConfigTool.exe و پوشه‌های موقتِ اتاق تست (ctgate*) هم پاک نمی‌شدن."""
+    root = str(root)
+    if not _SAFE_PATH.fullmatch(root) or len(root) < 8:
+        return None
+    exe = str(exe or "")
+    low = exe.lower().replace("/", "\\")
+    if not (exe and _SAFE_PATH.fullmatch(exe) and low.endswith(".exe")) or low.startswith(root.lower().rstrip("\\") + "\\") \
+            or any(x in low for x in ("\\windows\\", "\\program files", "\\system32")):
+        exe = ""  # فایل اجرایی فقط وقتی پاک می‌شه که امن و بیرون از پوشه‌ی برنامه و بیرون از پوشه‌های سیستمی باشه
+    ps = ("Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith('%s\\', [StringComparison]::OrdinalIgnoreCase)) "
+          "-or ($_.CommandLine -and $_.CommandLine.Contains('%s')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }") % (root, root)
+    L = ["@echo off", "chcp 65001 >nul", "ping 127.0.0.1 -n 3 >nul", f'powershell -NoProfile -NonInteractive -Command "{ps}"',
+         "ping 127.0.0.1 -n 2 >nul", "for /L %%i in (1,1,15) do (", f'  rmdir /s /q "{root}" 2>nul', f'  if not exist "{root}" goto done',
+         "  ping 127.0.0.1 -n 3 >nul", ")", ":done", 'for /d %%d in ("%TEMP%\\ctgate*") do rmdir /s /q "%%d" 2>nul']
+    if exe:
+        L += ["for /L %%i in (1,1,10) do (", f'  del /f /q "{exe}" 2>nul', f'  if not exist "{exe}" goto exedone', "  ping 127.0.0.1 -n 2 >nul", ")", ":exedone"]
+    L.append('(goto) 2>nul & del "%~f0"')
+    return "\r\n".join(L) + "\r\n"
+
+
 def quit_app(uninstall=False):
     QUITTING[0] = True
     STOP.set()
@@ -3835,9 +3864,20 @@ def quit_app(uninstall=False):
             (ROOT / "version.txt").unlink()
         except OSError:
             pass
-    if uninstall and os.name == "nt" and re.fullmatch(r"[\w\s:\\./()-]+", str(ROOT)):  # فقط مسیر امن؛ بدون shell
-        subprocess.Popen(f'cmd /c ping 127.0.0.1 -n 6 >nul & rmdir /s /q "{ROOT}"',
-                         creationflags=0x00000008 | 0x08000000)
+    if uninstall and os.name == "nt":
+        tmpd = tempfile.gettempdir()
+        txt = build_uninstall_cmd(ROOT, os.environ.get("CFG_EXE"))
+        flags = 0x00000008 | 0x08000000
+        try:
+            if txt:
+                sp = os.path.join(tmpd, f"ct_uninstall_{os.getpid()}.cmd")
+                with open(sp, "w", encoding="utf-8", newline="") as f:
+                    f.write(txt)
+                subprocess.Popen(["cmd", "/c", sp], cwd=tmpd, creationflags=flags)
+            elif _SAFE_PATH.fullmatch(str(ROOT)):  # مسیر برنامه امنه ولی اسکریپتِ کامل نشد؛ حداقل پوشه رو (از بیرون خودش) پاک کن
+                subprocess.Popen(f'cmd /c ping 127.0.0.1 -n 6 >nul & rmdir /s /q "{ROOT}"', cwd=tmpd, creationflags=flags)
+        except OSError:
+            pass
     os._exit(0)
 
 

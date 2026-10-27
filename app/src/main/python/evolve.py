@@ -550,8 +550,7 @@ def _gate(stage):
     for i, t in enumerate(ts, 1):
         _step(f"اجرای تست {i} از {len(ts)} ({t.name}) ...")
         tmp = tempfile.mkdtemp(prefix="ctgate")
-        env = dict(os.environ, CFG_DATA=tmp, CFG_NO_RESTART="1", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
-        env.pop("CFG_EMBEDDED", None)
+        env = _gate_env(tmp)
         try:
             r = subprocess.run([_py(), "-X", "utf8", str(t)], cwd=str(app), env=env, capture_output=True, text=True,
                                timeout=max(5, min(GATE_TIMEOUT, t_end - time.time())),
@@ -566,6 +565,19 @@ def _gate(stage):
             tail = scrub((r.stderr or r.stdout or "")[-260:].replace("\n", " | "))
             return False, f"{t.name} رد شد: {tail}"
     return True, f"{len(ts)} تست سالم بود"
+
+
+_ENV_KEEP = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL")
+
+
+def _gate_env(tmp):
+    """محیط اجرای تست‌های وصله: فقط متغیرهای لازم؛ توکن، کلید، پروکسی و بقیه‌ی محیطِ کاربر به تست‌ها نمی‌رسه.
+    (این «اتاق تست» sandbox امنیتی واقعی نیست: وصله و تست‌هاش کد اجراییان و دسترسی شبکه و فایل‌های کاربر رو قطع نمی‌کنه؛
+    فقط وصله‌ی مورد اعتماد نصب کن.)"""
+    env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
+    env.update(CFG_DATA=tmp, CFG_NO_RESTART="1", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1",
+               TEMP=tmp, TMP=tmp, TMPDIR=tmp, PATH=os.path.dirname(_py()) or os.defpath)
+    return env
 
 
 def _copy_tree(src, dst):
