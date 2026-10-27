@@ -30,7 +30,9 @@ def android_dns(cfg, c=None):
         elif c is not None and not c.get("ip") and ob.get("tag") != "fragment":
             ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["domainStrategy"] = "UseIP"
     return cfg
-SPEED_CAP_STREAM = 3_000_000  # سقف بایتِ هر جریانِ سرعت‌سنجیِ دانلود
+SPEED_CAP_STREAM = 2_000_000  # سقف بایتِ هر جریانِ سرعت‌سنجیِ دانلود
+SPEED_FRESH = 900  # ثانیه: سرعتِ اندازه‌گیری‌شده‌ی یک سرور تا این مدت معتبره و دوباره دانلود نمی‌شه
+NEED_ALL_SITES = [True]  # حالت عادی: سروری که هر سه سایت رو باز نکنه هیچ‌وقت انتخاب نمی‌شه (cfgweb با «فقط تلگرام» False می‌کنه)
 MAX_SUB_BYTES = 1_500_000  # بعد از باز کردن gzip؛ برای ۲۵۰۰ کانفیگ از هر منبع حدود نیم مگابایت کافیه (قبلاً ۵ مگابایت و بدون فشرده‌سازی؛ در یک روز ۲۳۷ مگابایت فقط برای منابع)
 LAT_URL = "https://www.gstatic.com/generate_204"
 IP_URL = "https://api.ipify.org"
@@ -838,12 +840,29 @@ def _stream(port, url, secs, res, i, timeout):
                 return
             t_first = time.time()
             n, end = len(body), t_first + secs
+            base, hist, t_chk = None, [], t_first
             while time.time() < end and n < SPEED_CAP_STREAM:  # سرور سریع بعد از چند مگابایت دیگه نیازی به ادامه نیست (قبلاً ۱۱۵ مگابایت در روز فقط سرعت‌سنجی)
                 x = s.recv(65536)
                 if not x:
                     break
                 n += len(x)
-            res[i] = (n, time.time() - t_first)
+                now = time.time()
+                if base is None:
+                    if now - t_first >= 0.3:  # ۰٫۳ ثانیه‌ی اول (slow-start) حساب نمی‌شه
+                        base = (now, n)
+                        hist, t_chk = [base], now
+                elif now - t_chk >= 0.3:
+                    t_chk = now
+                    hist.append((now, n))
+                    if len(hist) >= 3 and now - base[0] >= 0.6:  # دو پنجره‌ی پشت‌سرهم هم‌سرعت (±۲۰٪) = سرعت جا افتاده؛ ادامه‌ی دانلود فقط حجم می‌سوزونه
+                        r = [(hist[k][1] - hist[k - 1][1]) / max(1e-3, hist[k][0] - hist[k - 1][0]) for k in (-2, -1)]
+                        if min(r) > 0 and abs(r[0] - r[1]) <= 0.2 * max(r):
+                            break
+            cfgdata.add(n, "speed")  # بایت‌های واقعی (نه فقط پنجره‌ی اندازه‌گیری)
+            if base and time.time() - base[0] >= 0.3:
+                res[i] = (n - base[1], time.time() - base[0])  # سرعت پایدار، بدون راه‌اندازی اتصال و slow-start
+            else:
+                res[i] = (n, time.time() - t_first)
         finally:
             s.close()
     except Exception:
@@ -862,8 +881,9 @@ def measure_kbps(port, secs=3.0, streams=2, timeout=6, urls=None):
             t.join(secs + timeout + 2)
         got = [r for r in res if r]
         total, dt = sum(n for n, _ in got), max((d for _, d in got), default=0)
-        cfgdata.add(total, "speed")
         if total > 100_000 and dt > 0.4:
+            return int(total * 8 / 1000 / dt)
+        if total >= 1_000_000 and dt > 0.05:  # خیلی سریع: سقف بایت قبل از ۰٫۴ ثانیه پر شد؛ عددش کمتر از واقعیته ولی «سریع» نشون داده می‌شه (قبلاً None)
             return int(total * 8 / 1000 / dt)
     return None
 
@@ -1111,14 +1131,17 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=Fals
             if call:  # حالت تماس: کیفیت واقعی UDP (تأخیر/نوسان/افت) از داخل همین تونل
                 import cfgcall
                 c["call"] = cfgcall.measure_via(port, 12)
-            if speed and up:  # حالت آپلود: سرعت واقعی «آپلود» (به‌جای دانلود) از داخل تونل
-                k = measure_upload_kbps(port, secs, 2, timeout)
+            sv = c.get("sites")
+            useless = bool(sites and sv is not None and (not sv.get("tg") or (NEED_ALL_SITES[0] and not (sv.get("yt") and sv.get("ig")))))
+            fld = "kbps_up" if up else "kbps"
+            fresh = bool(c.get(fld) and time.time() - c.get(fld + "_t", 0) < SPEED_FRESH)
+            if speed and not useless and not fresh:  # سروری که سایت‌های لازم رو باز نمی‌کنه هیچ‌وقت انتخاب نمی‌شه؛ سرعتش حجم الکیه. سرعت تازه هم دوباره سنجیده نمی‌شه
+                if up:  # حالت آپلود: سرعت واقعی «آپلود» (به‌جای دانلود) از داخل تونل
+                    k = measure_upload_kbps(port, secs, 2, timeout)
+                else:  # سرعت واقعی دانلود از داخل تونل (فقط روی نامزدهای نهایی)
+                    k = measure_kbps(port, secs, 2, timeout)
                 if k:
-                    c["kbps_up"] = k
-            elif speed:  # سرعت واقعی دانلود از داخل تونل (فقط روی نامزدهای نهایی)
-                k = measure_kbps(port, secs, 2, timeout)
-                if k:
-                    c["kbps"] = k
+                    c[fld], c[fld + "_t"] = k, time.time()
     finally:
         p.terminate()
         try:

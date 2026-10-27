@@ -511,6 +511,7 @@ def check(c, rounds=1, timeout=3, speed=False, secs=3.0, sites=False, call=None,
     """تست واقعی یه کانفیگ روی یه نمونه‌ی جدا از xray (روی یه کپی تا اصل خراب نشه)."""
     cc = dict(c)
     cc["flags"] = set(c["flags"])
+    cfgscan.NEED_ALL_SITES[0] = not TGONLY[0]
     if sites:  # نتیجه‌ی قدیمی سایت‌ها نباید جای تست تازه بشینه
         cc.pop("sites", None)
     try:
@@ -2975,6 +2976,12 @@ def net_up():
     return ok.is_set()
 
 
+def src_cache_fresh():
+    """فهرست کانفیگ‌های ذخیره‌شده هنوز تازه‌ست؟ نت همراه/سقف حجم: ۶ ساعت؛ نت عادی: ۹۰ دقیقه (منابع حدود ساعتی عوض می‌شن).
+    هر بار باز/بسته‌کردن برنامه و هر جستجوی سریع قبلاً ~۷ مگابایت دانلود می‌کرد؛ گزارش واقعی: ۳۶ مگابایت منابع در یک روز."""
+    return _age_h(DATA / "cache.txt") < (6 if save_net_now() else 1.5)
+
+
 def startup_refresh():
     """اولین بار بعد از باز شدن برنامه: فهرست سیاه و منابع رو تازه می‌کنه (بدون منتظر موندن برای دکمه‌ی شروع)."""
     PREFETCH_RUNNING[0] = True
@@ -2982,8 +2989,8 @@ def startup_refresh():
         say("در حال به‌روزرسانی منابع و فهرست سیاه ...")
         tb = threading.Thread(target=update_block, args=(True,), daemon=True)
         tb.start()
-        if save_net_now() and _age_h(DATA / "cache.txt") < 6:
-            say("صرفه‌جویی اینترنت: فهرست کانفیگ‌ها کمتر از ۶ ساعت پیش دانلود شده؛ الان دوباره دانلود نمی‌شه (هر وقت لازم بود خودش تازه می‌کنه).")
+        if src_cache_fresh():
+            say("صرفه‌جویی اینترنت: فهرست کانفیگ‌ها تازه‌ست و دوباره دانلود نمی‌شه (هر وقت لازم بود خودش تازه می‌کنه).")
             tb.join(30)
             return
         ca = HERE / "cacert.pem"
@@ -3439,9 +3446,9 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     links, stats = list(PREFETCH["links"]), PREFETCH["stats"]
                     origin.update(PREFETCH["origin"])
                     say(f"از منابع تازه‌ی همین چند لحظه‌ی پیش استفاده می‌شه ({len(links)} کانفیگ).")
-                skip = (save_net_now() and _age_h(DATA / "cache.txt") < 6 and level == 1 and not links)  # نت همراه: لیست تازه‌ی ۶ ساعته هست؛ دوباره دانلود نکن
+                skip = (src_cache_fresh() and level == 1 and not links)  # لیست تازه هست؛ دوباره دانلود نکن (نت همراه ۶ ساعت، عادی ۹۰ دقیقه)
                 if skip:
-                    say("صرفه‌جویی اینترنت: از فهرست کانفیگ‌های ذخیره‌شده (کمتر از ۶ ساعت) استفاده می‌شه.")
+                    say("صرفه‌جویی اینترنت: از فهرست کانفیگ‌های ذخیره‌شده (تازه) استفاده می‌شه.")
                 for n in (1, 2, 3):
                     if links or skip:
                         break
