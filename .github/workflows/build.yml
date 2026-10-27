@@ -5,7 +5,25 @@ on:
     tags: ["v*"]
 
 jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: tests
+        # هر تست جدا اجرا می‌شه (یک بار دوباره امتحان می‌کنیم چون بعضی زمان‌بندی دارن)؛ تست‌های «xray واقعی» بدون فایل xray رد می‌شن
+        run: |
+          cd app/src/main/python
+          fail=0
+          for t in ../../../../tests/t*.py; do
+            if ! timeout 280 python3 "$t" >/tmp/out.txt 2>&1; then
+              echo "retry $t"; timeout 280 python3 "$t" >/tmp/out.txt 2>&1 || { echo "FAILED: $t"; tail -15 /tmp/out.txt; fail=1; }
+            fi
+          done
+          exit $fail
   apk:
+    needs: test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
