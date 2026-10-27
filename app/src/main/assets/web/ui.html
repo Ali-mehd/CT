@@ -198,7 +198,7 @@ const T="__T__";
 const M={auto:["فوق هوشمند","خودش تشخیص می‌ده چی‌کار می‌کنی"],speed:["سرعت","سریع‌ترین دانلود"],stable:["پایداری","بدون حتی یک خطا"],secure:["امنیت","فقط رمزنگاری سخت‌گیرانه"],upload:["آپلود","بیشترین سرعت آپلود"]};
 const MD={auto:"پیشنهادی. برنامه خودش می‌فهمه الان تماس داری، فایل آپلود/دانلود می‌کنی، سراغ بانک و کار حساس رفتی، یا فقط گشت‌وگذار می‌کنی، و همون‌طور رفتار می‌کنه: وسط تماس و کار حساس سرور رو عوض نمی‌کنه، اگه آپلود/دانلودت لاک‌پشتی شد سرور سریع‌تر رو با سرعت واقعی می‌سنجه، و برای گشت‌وگذار زودتر سراغ سرور بهتر می‌ره.",speed:"سرعت دانلود هر سرور از داخل تونل اندازه‌گرفته می‌شه و سریع‌ترین انتخاب می‌شه.",stable:"فقط سروری که ۵ تست پشت‌سرهم بی‌خطا داشته؛ کم‌نوسان‌ترین اول.",secure:"فقط Reality/TLS بدون هشدار تنظیماتی؛ گزینه‌ها کمترن ولی امن‌ترن.",upload:"سرعت «آپلود» هر سرور از داخل تونل اندازه‌گرفته می‌شه (فقط بدنه‌ای که مقصد تأیید کرده) و بهترین انتخاب می‌شه. برای فرستادن فایل/ویدیو/عکس؛ بدون mux و بدون خرد کردن بسته."};
 const TB=[["srv","سرورها"],["adv","پیشرفته"],["help","راهنما"]];
-let prof="auto",tab="srv",S={},last={},cancelling=0,loaded=false;
+let dmbUser=false,prof="auto",tab="srv",S={},last={},cancelling=0,loaded=false;
 const $=i=>document.getElementById(i);
 const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-T":T,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
 const once=(k,v,fn)=>{const j=JSON.stringify(v);if(last[k]!==j){last[k]=j;fn()}};
@@ -216,7 +216,7 @@ const el=(t,txt,cls)=>{const e=document.createElement(t);if(txt!=null)e.textCont
 function modes(){const c=$("modes");c.textContent="";for(const k in M){const b=el("button",null,"mode"+(k==prof?" s":""));b.append(M[k][0]);const s=el("small",M[k][1]);b.appendChild(s);b.onclick=()=>{prof=k;modes();save()};c.appendChild(b)}$("mdesc").textContent=MD[prof];$("spnote").style.display=prof=="auto"?"block":"none"}
 function tabs(){const t=$("tabs");t.textContent="";TB.forEach(([k,l])=>{const b=el("button",l,"tab"+(k==tab?" s":""));b.onclick=()=>{tab=k;tabs()};t.appendChild(b)});document.querySelectorAll(".pane").forEach(p=>p.className="pane"+(p.dataset.p==tab?" s":""))}
 document.querySelectorAll(".i").forEach(b=>b.onclick=()=>{const h=$(b.dataset.t);h.hidden=!h.hidden});
-const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked,netprobe:$("npon").checked,evolve_ok:$("evok").checked,data_mb:$("dmb").value=="auto"?null:parseInt($("dmb").value)});
+const cur=()=>({profile:prof,mode:document.querySelector("input[name=mode]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",speed:document.querySelector("input[name=sp]:checked").value,sysproxy:$("sysp").checked,direct:$("dir").value,tgonly:$("tgonly").checked,autosrc:$("autosrc").checked,netprobe:$("npon").checked,evolve_ok:$("evok").checked,...(dmbUser?($("dmb").value=="auto"?{data_mb:null,data_mb_user:false}:{data_mb:parseInt($("dmb").value),data_mb_user:true}):{})});
 function toast(m){let t=$("toast");if(!t){t=el("div",null,"toast");t.id="toast";t.setAttribute("role","status");document.body.appendChild(t)}t.textContent=m;t.className="toast on";clearTimeout(toast.h);toast.h=setTimeout(()=>t.className="toast",6000)}
 const FSZ=[["کوچک",0.9],["معمولی",1],["بزرگ",1.15],["خیلی بزرگ",1.3],["درشت",1.5]];let obfs=1;
 function applyLook(x){x=x||{};const f=typeof x.fs=="number"?x.fs:1;obfs=f;document.body.style.zoom=f==1?"":f;document.documentElement.classList.toggle("hc",!!x.hc)}
@@ -226,7 +226,7 @@ function showOb(s){$("ob").hidden=false;$("obhc").checked=document.documentEleme
 $("obhc").onchange=()=>document.documentElement.classList.toggle("hc",$("obhc").checked);
 $("obok").onclick=()=>{const b={fs:obfs,hc:$("obhc").checked,onboarded:true};if(!$("obnt").hidden)b.notemp=document.querySelector("input[name=obnt]:checked").value;api("/api/settings",b).then(()=>{$("ob").hidden=true}).catch(()=>{$("ob").hidden=true})};
 const save=()=>api("/api/settings",cur()).then(r=>{if(r&&r.applied&&r.applied.length)toast(r.applied.join("  •  "));return r}).catch(()=>{});
-function applySettings(x){if(!x)return;$("dmb").value=(x.data_mb===undefined||x.data_mb===null)?"auto":String(x.data_mb);if(x.profile)prof=M[x.profile]?x.profile:"auto";
+function applySettings(x){if(!x)return;dmbUser=!!x.data_mb_user;$("dmb").value=(x.data_mb_user&&x.data_mb!==undefined&&x.data_mb!==null)?String(x.data_mb):"auto";if(x.profile)prof=M[x.profile]?x.profile:"auto";
  if(x.mode){const mm=x.mode=="off"?"off":"stable";document.querySelectorAll("input[name=mode]").forEach(r=>r.checked=r.value==mm)}
  if(x.speed)document.querySelectorAll("input[name=sp]").forEach(r=>r.checked=r.value==x.speed);
  if(typeof x.quick=="boolean")document.querySelectorAll("input[name=q]").forEach(r=>r.checked=(r.value=="1")==x.quick);
@@ -313,6 +313,7 @@ $("go").onclick=()=>{const st=S.stage;
  if(st=="connected"||st=="running"){if(st=="running"){cancelling=1;$("go").disabled=true;$("go").textContent="در حال لغو…";setTimeout(()=>{cancelling=0},15000)}return api("/api/stop",{})}
  if(window.AndroidBridge&&$("sysp").checked)AndroidBridge.ensureVpn();$("st").textContent="در حال شروع …";
  api("/api/start",{profile:prof,speed:document.querySelector("input[name=sp]:checked").value,quick:document.querySelector("input[name=q]:checked").value=="1",sysproxy:$("sysp").checked,mode:document.querySelector("input[name=mode]:checked").value,direct:$("dir").value,tgonly:$("tgonly").checked})};
+$("dmb").addEventListener("change",()=>{dmbUser=true});
 document.querySelectorAll("input[name=mode],input[name=q],input[name=sp],#sysp,#dir,#dmb,#tgonly,#autosrc,#npon,#evok").forEach(e=>e.addEventListener("change",save));
 window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/closing?t="+T,"")}catch(e){}});
 $("discb").onclick=()=>api("/api/discover",{}).then(tick);
