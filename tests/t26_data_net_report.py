@@ -40,12 +40,12 @@ W.load_settings = lambda: {}
 assert W.data_budget_mb() == 150
 W.net_is_mobile = lambda: False
 assert W.data_budget_mb() == 0 and not W.data_saver()
-W.load_settings = lambda: {"data_mb": 3}
-assert W.data_budget_mb() == 3 and W.data_saver() is False or True
-D.DAY.clear(); D.add(2_000_000); assert not W.data_saver() and not W.bg_quiet()
-D.add(1_500_000); assert W.data_saver() and W.bg_quiet() and W.data_view()["saver"]
-W.load_settings = lambda: {"data_mb": 0}
-assert not W.data_saver() and not W.bg_quiet()                       # ۰ = نامحدود
+W.load_settings = lambda: {"data_mb": 3, "data_mb_user": True}
+assert W.data_budget_mb() == 3
+D.DAY.clear(); D.add(2_000_000); assert not W.data_saver() and not W.heavy_quiet()
+D.add(1_500_000); assert W.data_saver() and W.heavy_quiet() and not W.bg_quiet() and W.data_view()["saver"]
+W.load_settings = lambda: {"data_mb": 0, "data_mb_user": True}
+assert not W.data_saver() and not W.heavy_quiet()                    # ۰ = نامحدود
 print("3) daily budget: default 150MB on mobile / unlimited otherwise, background goes quiet when exhausted OK")
 
 # ۴) تغییر شبکه: دو نمونه‌ی پشت‌سرهم لازمه؛ نمونه‌ی گذرا نادیده؛ واکنش بسته به مرحله
