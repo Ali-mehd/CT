@@ -324,6 +324,8 @@ def save_settings(j):
         cur["data_mb"] = dm  # سقف مصرف روزانه‌ی خودِ برنامه (مگابایت)؛ ۰ = نامحدود
     elif "data_mb" in j and dm is None:
         cur.pop("data_mb", None)  # «خودکار»
+    if "data_mb_user" in j:
+        cur["data_mb_user"] = bool(j.get("data_mb_user")) and "data_mb" in cur
     fs = j.get("fs")
     if isinstance(fs, (int, float)) and not isinstance(fs, bool) and 0.8 <= fs <= 1.8:
         cur["fs"] = round(float(fs), 2)  # اندازه‌ی نوشته (ضریب)؛ کاربر در شروع برنامه با دید خودش انتخاب می‌کنه
@@ -416,8 +418,9 @@ def update_block(force=False):
             for m in cfgscan.mirror_urls(u):
                 try:
                     op = cfgscan.safe_opener()
-                    _raw = op.open(urllib.request.Request(m, headers={"User-Agent": "Mozilla/5.0"}), timeout=20).read(8_000_000)
-                    cfgdata.add(len(_raw) + 5000, "sources")
+                    with op.open(urllib.request.Request(m, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}), timeout=20) as _r:
+                        _raw, _wire = cfgscan._body(_r, 8_000_000)
+                    cfgdata.add(_wire + 5000, "sources")
                     texts.append(_raw.decode("utf-8", "replace"))
                     break
                 except Exception:
@@ -553,9 +556,10 @@ def net_is_mobile():
 
 def data_budget_mb():
     """سقف مصرف روزانه‌ی خودِ برنامه (جستجو، سرعت‌سنجی، منابع، پراب). پیش‌فرض: روی نت همراه ۱۵۰ مگابایت، روی مودم/وای‌فای نامحدود. ۰ = نامحدود."""
-    v = load_settings().get("data_mb")
-    if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 20000:
-        return v if net_is_mobile() or v == 0 else v  # کاربر صریحاً گفته؛ همه‌جا اعمال می‌شه
+    st = load_settings()
+    v = st.get("data_mb")
+    if st.get("data_mb_user") is True and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 20000:
+        return v  # فقط وقتی کاربر خودش از لیست انتخاب کرده (مقدارِ ذخیره‌شده‌ی بدون این نشانه نادیده گرفته می‌شه)
     return 150 if net_is_mobile() else 0
 
 
@@ -573,7 +577,13 @@ def data_view():
 
 def bg_quiet():
     """کارهای پس‌زمینه (تست سایت، سنجش جایگزین‌ها، پر کردن صف) وقتی ساکت می‌شن که تماس باشه (دستی یا تشخیص‌داده‌شده)، کار حساس، یا سقف مصرف نت پر شده باشه."""
-    return CALL[0] or (CUR[0] == "auto" and ACT.tracker.act in ("call", "secure")) or data_saver()
+    return CALL[0] or (CUR[0] == "auto" and ACT.tracker.act in ("call", "secure"))
+
+
+def heavy_quiet():
+    """کارهای پرمصرف (سرعت‌سنجی پس‌زمینه، دانلود دوباره‌ی منابع) علاوه بر شرایط بالا، با پر شدن سقف مصرف هم می‌ایستن؛
+    ولی نگهداری حداقلی (نظارت اتصال، رفرش جایگزین‌ها، پر کردن حداقل ذخیره) هیچ‌وقت به‌خاطر سقف متوقف نمی‌شه تا اتصال خراب نشه."""
+    return bg_quiet() or data_saver()
 
 SPEEDLIKE = ("speed", "upload")  # حالت‌هایی که «اندازه‌گیریِ واقعیِ سرعت» روی نامزدها انجام می‌دن (دانلود | آپلود)
 
@@ -982,7 +992,7 @@ def bench_loop(gen):
                 if GEN[0] != gen or STOP.is_set():
                     return
                 time.sleep(1)
-            if bg_quiet() or S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
+            if heavy_quiet() or S["stage"] != "connected" or GUARD_LOCK.locked() or not (POOL.get("bench") or []):
                 continue
             bench_step()
     except Exception:
@@ -1624,10 +1634,12 @@ def refill(gen, profile, seen):
             continue  # حالت تماس: ترافیک و پردازش پس‌زمینه ممنوع (جیتر تماس رو بالا می‌بره)
         if GEN[0] != gen or S["stage"] != "connected" or len(POOL["standby"]) >= (6 if net_is_mobile() else 14):
             continue
+        if data_saver() and len(POOL["standby"]) >= 3:
+            continue  # سقف مصرف پر شده؛ فقط تا حداقلِ ۳ جایگزین ادامه می‌دیم
         batch = [POOL["backlog"].pop(0) for _ in range(min(8, len(POOL["backlog"])))]
         if not batch:
-            if time.time() - last_fetch < 300:
-                continue
+            if time.time() - last_fetch < (1800 if save_net_now() else 600) or data_saver():
+                continue  # دانلود دوباره‌ی همه‌ی منابع سنگینه؛ نه هر ۵ دقیقه
             last_fetch = time.time()
             try:  # دانلود دوباره‌ی منابع از داخل خود تونل (حتی اگه GitHub مستقیم بسته باشه)
                 urls = [s["url"] for s in load_db()["sources"] if s["on"]]
@@ -1663,7 +1675,7 @@ def refill(gen, profile, seen):
 def supervisor(gen, profile, sysproxy, mode):
     hist, fails, warned, warn_txt = deque(maxlen=45), 0, False, ""
     t_switch = t_eval = t_ref = time.time()
-    auto, jit_t0 = profile == "auto", 0.0
+    auto, jit_t0, slow_t0, last_sw = profile == "auto", 0.0, 0.0, (SW_LOG[-1][0] if SW_LOG else 0.0)
     while GEN[0] == gen and S["stage"] == "connected":
         mode = eff_mode(MODE[0])  # کاربر وسط اتصال حالت جابه‌جایی رو عوض کرده باشه همین لحظه اعمال می‌شه؛ حالت تماس «کم‌پینگ» رو هوشمند می‌کنه
         time.sleep(0.5 if (mode == "fast" or fails) else random.uniform(2.0, 4.0))  # سالم: کم‌تعداد و نامنظم؛ مشکوک: سریع‌تر
@@ -1677,6 +1689,10 @@ def supervisor(gen, profile, sysproxy, mode):
                     ms = probe_robust(3.0) if mode == "stable" else probe(1.5)
             except Exception:
                 ms = None
+        if SW_LOG and SW_LOG[-1][0] != last_sw:  # سرور عوض شده (از هر راهی)؛ نمونه‌های سرور قبلی دیگه معتبر نیستن
+            last_sw = SW_LOG[-1][0]
+            hist.clear()
+            fails, jit_t0, slow_t0 = 0, 0.0, 0.0
         hist.append(ms)
         if ms:
             fails = 0
@@ -1707,6 +1723,14 @@ def supervisor(gen, profile, sysproxy, mode):
             warned, warn_txt = True, S["warn"]
         elif lk == "good" and warned and S.get("warn") == warn_txt:
             S["warn"], warned = "", False
+        recent = sorted(x for x in list(hist)[-12:] if x)
+        med_live = recent[len(recent) // 2] if len(recent) >= 8 else 0
+        slow_t0 = (slow_t0 or time.time()) if med_live >= SLOW_MS else 0.0
+        if (slow_t0 and time.time() - slow_t0 >= 30 and mode == "stable" and not CALL[0] and POOL["standby"]
+                and (not auto or act in ("", "idle", "normal", "interactive")) and time.time() > QUAL["cool"]
+                and (not SW_LOG or time.time() - SW_LOG[-1][0] > 60) and calm_ok() and not AUTO_LOCK.locked()):
+            QUAL["cool"] = time.time() + 90
+            threading.Thread(target=_quality_switch, args=(gen, profile, med_live), daemon=True).start()
         FAILN = 5 if mode == "stable" else 3  # حالت هوشمند: ۵ خطای پشت‌سرهم (≈۱۵–۲۰ ثانیه)، نه ۳ تا؛ خطای لحظه‌ای تماس رو قطع نکنه
         soft = (not CALL[0] and mode == "stable" and len(hist) >= 30 and time.time() - t_switch > 60 and len(okr) / len(hist) < 0.6
                 and calm_ok())
@@ -1855,6 +1879,49 @@ def _post_call_improve(gen, profile):
             auto_log(f"بعد از تماس ضعیف: سرور با MOS≈{ok[0]['call']['mos']}")
     except Exception as e:
         auto_log(f"خطا در بهبود بعد از تماس: {type(e).__name__}")
+    finally:
+        AUTO_LOCK.release()
+
+
+QUAL = {"cool": 0.0}
+SLOW_MS = 1500  # پینگ واقعیِ میانه‌ی اتصال فعلی که از اون به بعد «کند» حساب می‌شه (سرور وصل می‌شه ولی استفاده‌ش عذابه)
+
+
+def _quality_switch(gen, profile, cur_med):
+    """سرور فعلی «کند ولی وصل»ه (پینگ واقعی مدام بالا). جایگزین‌های آماده رو یکی‌یکی امتحان می‌کنه و به اولین سروری می‌ره که
+    با پینگ واقعیِ خودش (نه عدد قدیمیِ تست) واضحاً بهتره؛ اگه بهتر نبود برمی‌گرده."""
+    if not AUTO_LOCK.acquire(blocking=False):
+        return
+    try:
+        now = time.time()
+        cands = sorted([c for c in standby_ok() if sites_ok(c)], key=lambda c: (flaky(c), eff(c)))[:3]
+        if not cands:
+            S["note"] = f"سرور فعلی کنده (پینگ واقعی ~{cur_med} ms) ولی جایگزین تأییدشده‌ای ندارم؛ دنبال سرور جدید می‌گردم."
+            POOL["refill_fast"] = now + 180
+            QUAL["cool"] = now + 240
+            auto_log(f"سرور فعلی کند ({cur_med} ms) و جایگزینی نبود")
+            return
+        S["note"] = f"سرور فعلی کنده (پینگ واقعی ~{cur_med} ms)؛ دارم جایگزین‌ها رو امتحان می‌کنم ..."
+
+        def better(ms):
+            xs = [ms] + [probe(3.0) for _ in range(2)]
+            xs = sorted(x for x in xs if x)
+            return len(xs) >= 2 and xs[len(xs) // 2] < min(0.7 * cur_med, 1800)
+
+        for c in cands:
+            if GEN[0] != gen or STOP.is_set():
+                return
+            if _auto_switch(gen, profile, c, "سرور فعلی کند بود؛ جایگزین سریع‌تر", better):
+                QUAL["cool"] = time.time() + 180
+                S["note"] = "سرور قبلی کند بود؛ به سروری با پینگ واقعیِ بهتر رفتم."
+                auto_log(f"جابه‌جایی برای کندی: ~{cur_med} ms ← سرور بهتر")
+                return
+        S["note"] = "جایگزین‌های آماده هم بهتر نبودن؛ با همین ادامه می‌دم و دنبال سرور تازه می‌گردم."
+        POOL["refill_fast"] = time.time() + 180
+        QUAL["cool"] = time.time() + 300
+        auto_log(f"{len(cands)} جایگزین امتحان شد و هیچ‌کدوم از {cur_med} ms بهتر نبود")
+    except Exception as e:
+        T.err("quality_switch", e)
     finally:
         AUTO_LOCK.release()
 

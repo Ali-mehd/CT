@@ -4,6 +4,7 @@ import functools, base64, hashlib, html as _html, ipaddress, json, os, re, shuti
 import statistics, struct, subprocess, tempfile, time, urllib.error, urllib.parse, urllib.request
 import http.client
 import threading
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 try:
     import cfgdata
@@ -29,7 +30,8 @@ def android_dns(cfg, c=None):
         elif c is not None and not c.get("ip") and ob.get("tag") != "fragment":
             ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["domainStrategy"] = "UseIP"
     return cfg
-MAX_SUB_BYTES = 5 * 1024 * 1024
+SPEED_CAP_STREAM = 3_000_000  # سقف بایتِ هر جریانِ سرعت‌سنجیِ دانلود
+MAX_SUB_BYTES = 1_500_000  # بعد از باز کردن gzip؛ برای ۲۵۰۰ کانفیگ از هر منبع حدود نیم مگابایت کافیه (قبلاً ۵ مگابایت و بدون فشرده‌سازی؛ در یک روز ۲۳۷ مگابایت فقط برای منابع)
 LAT_URL = "https://www.gstatic.com/generate_204"
 IP_URL = "https://api.ipify.org"
 PLAIN_URL = "http://example.com/"
@@ -62,6 +64,8 @@ FLAGS = {
 # ---------------------------------------------------------------- parsing
 def b64d(s):
     s = s.strip().replace("-", "+").replace("_", "/")
+    if "=" not in s:
+        s = s[:len(s) // 4 * 4]  # دانلودِ سقف‌دار ممکنه وسط یک چهارتاییِ base64 قطع شده باشه؛ انتهای ناقص رو بنداز
     s += "=" * (-len(s) % 4)
     return base64.b64decode(s).decode("utf-8", "replace")
 
@@ -834,7 +838,7 @@ def _stream(port, url, secs, res, i, timeout):
                 return
             t_first = time.time()
             n, end = len(body), t_first + secs
-            while time.time() < end:
+            while time.time() < end and n < SPEED_CAP_STREAM:  # سرور سریع بعد از چند مگابایت دیگه نیازی به ادامه نیست (قبلاً ۱۱۵ مگابایت در روز فقط سرعت‌سنجی)
                 x = s.recv(65536)
                 if not x:
                     break
@@ -903,7 +907,7 @@ def _up_stream(port, url, secs, res, i, timeout, chunk=262144):
                    f"Content-Length: {len(body)}\r\nConnection: keep-alive\r\n\r\n").encode()
             t0 = time.time()
             end, n, t_last = t0 + secs, 0, None
-            while time.time() < end:
+            while time.time() < end and n < SPEED_CAP_STREAM:
                 s.sendall(hdr + body)
                 buf, t_hdr = b"", time.time() + timeout
                 while b"\r\n\r\n" not in buf and len(buf) < 16384 and time.time() < t_hdr:
@@ -1268,14 +1272,34 @@ class _Pinned(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
+def _body(r, cap=None):
+    """بدنه‌ی پاسخ تا سقف `cap` بایتِ بازشده؛ gzip پشتیبانی می‌شه. برمی‌گردونه: (بدنه، بایت‌های واقعیِ روی سیم)."""
+    cap = cap or MAX_SUB_BYTES
+    try:
+        enc = (r.headers.get("Content-Encoding") if hasattr(r, "headers") and r.headers is not None else r.getheader("Content-Encoding")) or ""
+    except Exception:
+        enc = ""
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS) if "gzip" in enc.lower() else None
+    out, wire = bytearray(), 0
+    while len(out) < cap:
+        chunk = r.read(65536)
+        if not chunk:
+            break
+        wire += len(chunk)
+        out += d.decompress(chunk, cap - len(out)) if d else chunk
+    return bytes(out[:cap]), wire
+
+
 def get_pinned(host, ip, path, ctx, timeout, port=443):
     conn = _Pinned(host, ip, port, ctx, timeout)
     try:
-        conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"})
+        conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"})
         r = conn.getresponse()
         if r.status != 200:
             raise urllib.error.HTTPError(path, r.status, "", None, None)
-        return r.read(MAX_SUB_BYTES)
+        body, wire = _body(r)
+        cfgdata.add(wire + 5000, "sources")
+        return body
     finally:
         conn.close()
 
@@ -1497,10 +1521,10 @@ def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy
                 op = via if a == "via" else direct
 
                 def get(p, op=op):
-                    rq = urllib.request.Request(p, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
+                    rq = urllib.request.Request(p, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en", "Accept-Encoding": "gzip"})
                     with op.open(rq, timeout=9) as r:
-                        _b = r.read(MAX_SUB_BYTES)
-                        cfgdata.add(len(_b) + 5000, "sources")
+                        _b, _wire = _body(r)
+                        cfgdata.add(_wire + 5000, "sources")
                         return _b.decode("utf-8", "replace")
                 ls, subs = channel_links(u, get)
                 for sb in subs:
@@ -1515,12 +1539,11 @@ def fetch_sources(urls, per_source=400, log=print, origin=None, stop=None, proxy
                 return
             if kind == "pin":
                 raw = get_pinned(a[0], a[1], a[2], ctx, 8, a[3])
-                cfgdata.add(len(raw) + 5000, "sources")
             else:
-                req = urllib.request.Request(a, headers={"User-Agent": "Mozilla/5.0"})
+                req = urllib.request.Request(a, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"})
                 with (via if kind == "via" else direct).open(req, timeout=8) as r:
-                    raw = r.read(MAX_SUB_BYTES)
-                cfgdata.add(len(raw) + 5000, "sources")
+                    raw, _wire = _body(r)
+                cfgdata.add(_wire + 5000, "sources")
             ls = list(dict.fromkeys(extract_links(raw.decode("utf-8", "replace"))))
             if ls and not done[u].is_set():
                 got[u] = ls
