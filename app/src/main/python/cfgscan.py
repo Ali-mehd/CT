@@ -1089,9 +1089,9 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=Fals
                 up_ok = True
                 break
             except OSError:
-                time.sleep(0.2)
+                time.sleep(0.05)  # xray معمولاً در ~۱۰۰ms بالا میاد؛ پولینگ ۰٫۲ ثانیه‌ای تا ۰٫۲s الکی به هر تست اضافه می‌کرد
         core_why = "" if up_ok else ("core_exit" if p.poll() is not None else "core_port")  # هسته (xray/sing-box) بلافاصله مرد | پورتش تا مهلت باز نشد
-        for _ in range(rounds):
+        for rnd in range(rounds):  # (نه «_»: داخل حلقه st, _, ms = ... اون رو بازنویسی می‌کرد)
             try:
                 st, _, ms = fetch(port, LAT_URL, timeout)
                 if st == 204:
@@ -1107,25 +1107,33 @@ def live(c, xray, rounds, timeout, speed=False, secs=3.0, sites=False, call=Fals
                 why = ("timeout" if isinstance(e, (socket.timeout, TimeoutError)) else
                        "tunnel_refused" if isinstance(e, ConnectionError) and str(e) in ("connect", "socks") else
                        "reset" if isinstance(e, ConnectionResetError) else "tunnel_" + type(e).__name__[:20])
-            time.sleep(0.4)
+            if rnd < rounds - 1:  # بعد از آخرین دور خوابیدن فقط جای اسلات رو اشغال می‌کرد
+                time.sleep(0.4)
         if not ok and core_why:
             why = core_why  # ریشه‌ی مشکل «هسته بالا نیومد» بوده؛ خطاهای بعدیِ اتصال فقط نتیجه‌ی همونن
         if ok:
-            try:
-                _, body, _ = fetch(port, IP_URL, timeout)
-                ip = body.decode("ascii", "ignore").strip()
-                ipaddress.ip_address(ip)
-                c["exit_ip"] = ip
-            except Exception:
-                pass
-            try:
-                st2, body, _ = fetch(port, PLAIN_URL, timeout)
-                if st2 == 200:  # خطا/ریدایرکت/بلاک پورت 80 نتیجه‌ی نامعلومه، نه دستکاری
-                    c["plain_hash"] = hashlib.sha256(body).hexdigest()[:16]
-                    if b"Example Domain" not in body or b"<script" in body.lower() or len(body) > 5000:
-                        c["flags"].add("tamper")
-            except Exception:
-                pass
+            def _ipchk():
+                try:
+                    _, body, _ = fetch(port, IP_URL, timeout)
+                    ip = body.decode("ascii", "ignore").strip()
+                    ipaddress.ip_address(ip)
+                    c["exit_ip"] = ip
+                except Exception:
+                    pass
+
+            def _plainchk():
+                try:
+                    st2, body, _ = fetch(port, PLAIN_URL, timeout)
+                    if st2 == 200:  # خطا/ریدایرکت/بلاک پورت 80 نتیجه‌ی نامعلومه، نه دستکاری
+                        c["plain_hash"] = hashlib.sha256(body).hexdigest()[:16]
+                        if b"Example Domain" not in body or b"<script" in body.lower() or len(body) > 5000:
+                            c["flags"].add("tamper")
+                except Exception:
+                    pass
+            _th = threading.Thread(target=_plainchk, daemon=True)  # دو درخواست مستقل؛ پشت‌سرهم اسلات تست رو تا دو برابر بیشتر نگه می‌داشتن
+            _th.start()
+            _ipchk()
+            _th.join(timeout + 2)
             if sites:  # آیا یوتیوب و اینستاگرام و تلگرام واقعاً باز می‌شن؟
                 c["sites"] = site_check(port, min(timeout, 5))
             if call:  # حالت تماس: کیفیت واقعی UDP (تأخیر/نوسان/افت) از داخل همین تونل

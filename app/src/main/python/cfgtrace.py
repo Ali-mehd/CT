@@ -119,6 +119,47 @@ def snapshot(max_events=120):
                 "count": dict(COUNT), "runs": runs, "incidents": list(INC)}
 
 
+TAIL_VER = 1
+
+
+def save_tail(path, extra=None):
+    """ته‌مانده‌ی ردپا (رویدادها، لحظه‌های مشکل، زمان‌بندی جستجوها، شمارنده‌ها) رو روی دیسک می‌نویسه تا بعد از بسته‌شدن برنامه هم
+    توی گزارشِ بعدی «نشست قبلی» دیده بشه؛ بدون این، هر بار برنامه بسته می‌شد تاریخچه‌ی قطع‌وصلی‌ها برای همیشه می‌رفت.
+    همون محتوای snapshot() (بدون آدرس/IP) + زمان ذخیره؛ extra (مثلاً نمودار زمانی) فقط عدد و دسته است."""
+    import json
+    import os
+    try:
+        snap = snapshot(max_events=150)
+        snap.pop("perf", None)  # زمان‌سنجی به نمونه‌های بزرگ وابسته‌ست؛ خلاصه‌ش رو جدا نگه می‌داریم
+        snap["perf"] = {k: {kk: vv for kk, vv in v.items() if kk in ("n", "avg", "p50", "p90", "max")} for k, v in snapshot().get("perf", {}).items()}
+        snap.update(ver=TAIL_VER, saved=time.time(), uptime_s=snap.get("now"))
+        if extra:
+            snap["extra"] = extra
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def load_prev(path):
+    """نشست قبلی رو برمی‌گردونه (یا None). فقط ساختار و اندازه‌ی معقول قبول می‌شه؛ فایل خراب هیچ‌وقت برنامه رو نمی‌اندازه."""
+    import json
+    try:
+        d = json.loads(open(path, encoding="utf-8").read())
+        if not isinstance(d, dict) or d.get("ver") != TAIL_VER or not isinstance(d.get("saved"), (int, float)):
+            return None
+        d["saved_ago_h"] = round((time.time() - d["saved"]) / 3600, 1)
+        for k in ("events", "incidents", "runs"):
+            if not isinstance(d.get(k), list):
+                d[k] = []
+        d["events"], d["incidents"], d["runs"] = d["events"][-150:], d["incidents"][-8:], d["runs"][-6:]
+        return d
+    except Exception:
+        return None
+
+
 def _r(x):
     return None if x is None else round(x, 3)
 
