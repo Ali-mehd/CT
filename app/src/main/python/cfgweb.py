@@ -812,11 +812,14 @@ def probe_retry(n=3, timeout=3):
     return None
 
 
-def connect_ladder(cands, profile, pool_size):
-    """از کامل‌ترین تنظیمات به ساده‌ترین؛ هر مرحله واقعاً تست می‌شه. (sel, ms) یا None."""
+def connect_ladder(cands, profile, pool_size, alive=None):
+    """از کامل‌ترین تنظیمات به ساده‌ترین؛ هر مرحله واقعاً تست می‌شه. (sel, ms) یا None.
+    alive: تابعی که می‌گه این جستجو هنوز «جستجوی فعلی»ـه؛ نخِ دیرتمومِ جستجوی قبلی نباید xray جستجوی تازه رو بکشه."""
+    def stop():
+        return STOP.is_set() or (alive is not None and not alive())
     pool = cands[:pool_size]
     for plain in (True, False):  # اول ساده و سریع؛ ترفندهای کمکی (fragment/mux) فقط اگه لازم شد
-        if STOP.is_set():
+        if stop():
             return None
         sel = start_xray(pool, profile, plain)
         ms = probe_retry(2, 4)
@@ -825,7 +828,7 @@ def connect_ladder(cands, profile, pool_size):
         if pool and pool[0]["proto"] in cfgscan.SB_PROTOS:
             break  # برای موتور دوم حالت ساده/کامل معنی نداره
     for c in cands[:5]:  # سرور به سرور، ساده‌ترین حالت
-        if STOP.is_set():
+        if stop():
             return None
         if len(pool) == 1 and c is pool[0]:
             continue
@@ -1123,12 +1126,12 @@ def _failover(gen, profile, sysproxy, mode):
         c = fastc[0]
         tried.add(id(c))
         sel = start_xray([c], profile)
-        ms = probe_retry(2, 3)
+        ms = probe_retry(2, cand_probe_tmo(c))
         if ms:
             split_pools([x for x in rest if id(x) not in tried])
             set_active(sel, ms)
             POOL["switches"] += 1
-            POOL["sites"] = None
+            POOL["sites"] = sel[0].get("sites")
             save_good(sel)
             sw_mark("قطع/ضعف شدید سرور قبلی")
             S.update(msg="وصل شدی ✓", note=f"جابه‌جایی خودکار انجام شد ({time.time() - t0:.1f} ثانیه)")
@@ -1143,17 +1146,17 @@ def _failover(gen, profile, sysproxy, mode):
         if not cand:
             break
         tried.update(id(c) for c in cand)
-        good = sorted([r for r in check_many(cand, 2, 3, sites=True) if solid(r)], key=lambda r: (not sites_ok(r), rk(r)))  # فقط سرور کاملاً سالم؛ بین اونا اولویت با سروریه که سایت‌ها رو باز می‌کنه
+        good = sorted([r for r in check_many(cand, 2, max(3, max(cand_probe_tmo(x) for x in cand)), sites=True) if solid(r)], key=lambda r: (not sites_ok(r), rk(r)))  # فقط سرور کاملاً سالم؛ بین اونا اولویت با سروریه که سایت‌ها رو باز می‌کنه
         if not good or GEN[0] != gen:
             continue
         pool = [g for g in good if sites_ok(g)] or good  # توی حالت کم‌پینگ هم سرورِ بی‌سایت وسط استخر نیاد (مگر چیزی بهتر نباشه)
         sel = start_xray(pool[:POOL_SIZE] if mode == "fast" else pool[:1], profile)
-        ms = probe_retry(3, 3)
+        ms = probe_retry(3, cand_probe_tmo(pool[0]))
         if ms:
             split_pools([c for c in rest if id(c) not in tried] + [g for g in good if g not in sel])
             set_active(sel, ms)
             POOL["switches"] += 1
-            POOL["sites"] = None
+            POOL["sites"] = sel[0].get("sites")
             save_good(sel)
             sw_mark("قطع/ضعف شدید سرور قبلی")
             S.update(msg="وصل شدی ✓", note=f"جابه‌جایی خودکار انجام شد ({time.time() - t0:.1f} ثانیه)")
@@ -1342,13 +1345,14 @@ def _call_try_switch(gen, profile, cur, best):
             return False
         prev = list(POOL["active"])
         sel = start_xray([best], profile)
-        ms = probe_retry(3, 3)
+        ms = probe_retry(3, cand_probe_tmo(best))
         nq = cfgcall.measure_via(SOCKS, 12) if ms else None
         if ms and nq and cfgcall.call_ok(nq, "fair") and nq["mos"] > cur["mos"]:
             POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
+            POOL["reserve"] = [c for c in POOL.get("reserve", []) if c["raw"] != sel[0]["raw"]]
             set_active(sel, ms)
             POOL["switches"] += 1
-            POOL["sites"] = None
+            POOL["sites"] = sel[0].get("sites")
             save_good(sel)
             sw_mark("حالت تماس: سرور بهتر برای تماس")
             S["call"] = dict(nq, t=time.time())
@@ -1470,7 +1474,7 @@ def _upgrade_check(gen, profile, hist):
         return
     prev = list(POOL["active"])
     sel = start_xray(good[:1], profile)
-    ms = probe_retry(3, 3)
+    ms = probe_retry(3, cand_probe_tmo(good[0]))
     if ms and ms < 0.8 * med:
         POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
         set_active(sel, ms)
@@ -1704,14 +1708,20 @@ def refill(gen, profile, seen):
         POOL["standby"].sort(key=rk)
 
 
-def probe_timeout_for(hist, base=3.0):
+def cand_probe_tmo(c, base=3.0):
+    """مهلت پرابِ تأیید یک سرور جایگزین: از پینگ ثبت‌شده‌ی خودش (lat، میلی‌ثانیه). سرور ۴ ثانیه‌ای با مهلت ثابت ۳ ثانیه هیچ‌وقت «تأیید» نمی‌شد."""
+    lat = (c.get("lat") or 0) / 1000.0
+    return base if lat < 1.5 else min(7.0, lat * 1.8 + 1.0)
+
+
+def probe_timeout_for(hist, base=3.0, seed=0):
     """مهلت پراب سلامت: اگه سرور فعلی «زنده ولی کنده» (میانه‌ی چند پراب موفق اخیر بالای ۱٫۵ ثانیه) باشه، مهلت بلندتر می‌شه.
     گزارش واقعی: پینگ بعضی سرورها ۳٫۹ تا ۵٫۹ ثانیه بود ولی مهلت ثابت ۳ ثانیه‌ست، پس سرور کند «قطع/افت» حساب می‌شد و جابه‌جایی
     پشت‌سرهم شروع می‌شد (هر جابه‌جایی هم ویدیو رو می‌پروند). سرور سالم با سابقه‌ی سریع همون مهلت ۳ ثانیه‌ای رو می‌گیره، پس قطعِ ناگهانی
     هنوز زود تشخیص داده می‌شه؛ کندیِ واقعی رو هم «مدیر کیفیت» (جایگزینِ حداقل ۳۰٪ بهتر) رسیدگی می‌کنه، نه شمارنده‌ی قطع."""
     ok = sorted(x for x in list(hist)[-12:] if x)
-    if len(ok) < 4:
-        return base
+    if len(ok) < 4:  # هنوز نمونه‌ی کافی نداریم: از پینگِ لحظه‌ی اتصال (seed) شروع کن، نه ۳ ثانیه‌ی کور
+        return base if seed < 1500 else min(7.0, seed / 1000.0 * 1.8 + 1.0)
     med = ok[len(ok) // 2]
     return base if med < 1500 else min(7.0, med / 1000.0 * 1.8 + 1.0)
 
@@ -1730,7 +1740,7 @@ def supervisor(gen, profile, sysproxy, mode):
         if not dead:
             try:
                 with cfgdata.cat("probe"):
-                    pt = probe_timeout_for(hist)
+                    pt = probe_timeout_for(hist, seed=(S.get("connected") or {}).get("ms") or 0)
                     ms = probe_robust(pt) if mode == "stable" else probe(max(1.5, pt - 1.5))
             except Exception:
                 ms = None
@@ -1837,12 +1847,13 @@ def _auto_switch(gen, profile, best, why, verify=None):
             return False
         prev = list(POOL["active"])
         sel = start_xray([best], profile)
-        ms = probe_retry(3, 3)
+        ms = probe_retry(3, cand_probe_tmo(best))  # سرور ۳–۵ ثانیه‌ای با مهلت ثابت ۳ ثانیه هیچ‌وقت «بالا اومده» حساب نمی‌شد
         if ms and (verify is None or verify(ms)):
             POOL["standby"] = [c for c in POOL["standby"] if c["raw"] != sel[0]["raw"]] + prev
+            POOL["reserve"] = [c for c in POOL.get("reserve", []) if c["raw"] != sel[0]["raw"]]  # سرور فعال همزمان توی پناهگاه نمونه
             set_active(sel, ms)
             POOL["switches"] += 1
-            POOL["sites"] = None
+            POOL["sites"] = sel[0].get("sites")  # آخرین وضعیت شناخته‌شده‌ی سایت‌های سرور تازه؛ نه خالی تا چک بعدی ۶۰ ثانیه‌ای
             save_good(sel)
             sw_mark(why)
             return True
@@ -1940,7 +1951,9 @@ def _quality_switch(gen, profile, cur_med):
     try:
         now = time.time()
         cands = sorted([c for c in standby_ok() if sites_ok(c)], key=lambda c: (flaky(c), eff(c)))[:3]
-        if not cands:  # جایگزین کامل نیست: ناقص‌های سالمِ واضحاً سریع‌تر هم قابل‌قبولن (better() بعد از اتصال با پینگ واقعی تأیید می‌کنه)
+        act_s = POOL.get("sites") or ((POOL["active"][0].get("sites") if POOL["active"] else None) or {})
+        if not cands and act_s and not sites_ok({"sites": act_s}):  # وضعیت سایت‌های فعلی هنوز سنجیده نشده (مثلاً تازه جابه‌جا شدیم) ⇒ ناقص فرض نمی‌شه  # فقط اگه سرور فعلی خودش ناقصه: ناقص‌های سالمِ واضحاً سریع‌تر قابل‌قبولن (better() بعد از اتصال با پینگ واقعی تأیید می‌کنه).
+            # اگه فعلی هر سه سایت رو باز می‌کنه، هیچ‌وقت با سرور ناقص عوضش نمی‌کنیم (قانونِ سه‌سایت)
             cands = sorted([c for c in reserve_ok() if (c.get("success") or 0) >= 0.67 and eff(c) < 0.7 * cur_med],
                            key=lambda c: (flaky(c), eff(c)))[:3]
         if not cands:
@@ -1950,6 +1963,19 @@ def _quality_switch(gen, profile, cur_med):
             auto_log(f"سرور فعلی کند ({cur_med} ms) و جایگزینی نبود")
             return
         S["note"] = f"سرور فعلی کنده (پینگ واقعی ~{cur_med} ms)؛ دارم جایگزین‌ها رو امتحان می‌کنم ..."
+        # پیش‌سنجش روی xray موقت (تونل فعلی دست نمی‌خوره): قبلاً هر جایگزین با قطع تونل امتحان می‌شد و اگه بهتر نبود دوباره
+        # برمی‌گشت؛ تا ۳ جایگزین = تا چند ده ثانیه قطع‌وصلی، هر چند دقیقه، روی شبکه‌ای که همه‌ی سرورهاش کنده.
+        pre = check_many(cands, 2, max(4, min(8, int(cur_med / 1000 * 2 + 2))), 3)
+        lat = {r["raw"]: r.get("lat") for r in pre if r.get("alive") and solid(r)}
+        cands = sorted([c for c in cands if (lat.get(c["raw"]) or 10 ** 9) < 0.8 * cur_med], key=lambda c: lat[c["raw"]])
+        if GEN[0] != gen or STOP.is_set():
+            return
+        if not cands:
+            S["note"] = f"سرور فعلی کنده (~{cur_med} ms) ولی جایگزین‌های آماده هم بهتر نبودن؛ بدون قطع اتصال، با همین ادامه می‌دم و دنبال سرور تازه می‌گردم."
+            POOL["refill_fast"] = time.time() + 180
+            QUAL["cool"] = time.time() + 300
+            auto_log(f"سرور فعلی کند ({cur_med} ms)؛ پیش‌سنجشِ جایگزین‌ها بدون قطع تونل: هیچ‌کدوم واضحاً بهتر نبود")
+            return
 
         def better(ms):
             xs = [ms] + [probe(3.0) for _ in range(2)]
@@ -2746,13 +2772,23 @@ def prune_sources():
         pass
 
 
+SITE_TMO = [5]  # مهلتِ تست سه‌سایت؛ روی شبکه‌ی کند همراه با مهلت اسکن بالا می‌ره (قبلاً همیشه ۵ بود و سرور کندِ سالم رد می‌شد)
+def site_tmo_now():
+    """مهلتِ تست سه‌سایتِ یک سرورِ در حال استفاده/جایگزین: بزرگ‌ترِ مهلتِ شبکه‌ی کند و «۲ + ۱٫۸ برابر پینگِ واقعیِ تونل» (حداکثر ۱۰ ثانیه)."""
+    ms = (S.get("connected") or {}).get("ms") or 0
+    return int(min(10, max(SITE_TMO[0], 2 + 1.8 * ms / 1000.0)))
+
+
 SITE_INFLIGHT = set()  # سرورهایی که همین الان تست سه‌سایتشون در جریانه (تا دو بار پشت‌سرهم تست نشن)
 SITE_LOCK = threading.Lock()
 
 
 def _site_probe(c, cache):
     """یک تست کامل سه‌سایت روی یک سرور؛ نتیجه (حتی اگه کسی دیگه منتظرش نباشه) توی cache می‌شینه و یادگیری/قرنطینه هم به‌روز می‌شه."""
-    r = check(c, 1, 5, sites=True)
+    g0 = GEN[0]
+    r = check(c, 1, SITE_TMO[0], sites=True)
+    if GEN[0] != g0:  # وسط تست، جستجوی تازه شروع شد (مثلاً شبکه عوض شد و SITE_CACHE پاک شد)؛ نتیجه‌ی شبکه‌ی قبلی نباید وارد کش تازه بشه
+        return r
     r["site_t"] = time.time()
     cache[c["raw"]] = r
     if r.get("alive"):
@@ -2784,7 +2820,7 @@ def sites_pick(found, cache, first_ok=True):
             r = None
             try:
                 with gate:
-                    if not STOP.is_set():
+                    if not STOP.is_set() and S.get("stage") != "connected":  # وصل شدیم؛ تست‌های منتظرِ نوبت دیگه بی‌فایده‌ان و فقط xray الکی بالا می‌آورن
                         r = _site_probe(c, cache)
             except Exception as e:
                 T.err("site_probe", e)
@@ -2852,6 +2888,7 @@ def sites_watch(gen, profile, found):
     """هر SITE_EVERY ثانیه (۶۰) دسترسی به سه سایت رو از داخل تونل دوباره چک می‌کنه. اگه سرور خوب بعداً خراب شد
     (مثلاً یوتیوب بسته شد) بعد از یک تأیید دوباره، خودش بدون دخالت تو سرور بهتری پیدا می‌کنه و جابه‌جا می‌شه.
     قبلاً این چک هر ۵ دقیقه بود و یوتیوبِ از کار افتاده تا ۵ دقیقه بی‌خبر می‌موند."""
+    skipped = [0]
     try:
         while True:
             for _ in range(SITE_EVERY // 5):
@@ -2877,7 +2914,12 @@ def sites_watch(gen, profile, found):
                         break
                     except Exception:
                         continue
-            r = cfgscan.site_check(SOCKS, 5)
+            if APIPORT[0] and sum(ACT.rates.avg(6)) > 40 and skipped[0] < 3:
+                skipped[0] += 1  # تونل الان زیر بار واقعیه (مثلاً بافر ویدیو)؛ چک سایت پشت همون صف می‌مونه و الکی «بسته» به نظر می‌رسه
+                continue
+            skipped[0] = 0
+            stmo = site_tmo_now()  # سرور ۴ ثانیه‌ای با مهلت ۵ ثانیه‌ی ثابت هیچ‌وقت سه سایت رو تأیید نمی‌کرد
+            r = cfgscan.site_check(SOCKS, stmo)
             POOL["sites"] = r
             if sites_ok({"sites": r}):
                 continue
@@ -2890,7 +2932,7 @@ def sites_watch(gen, profile, found):
                 time.sleep(8)
                 if GEN[0] != gen or STOP.is_set():
                     return
-                r = cfgscan.site_check(SOCKS, 5)
+                r = cfgscan.site_check(SOCKS, stmo)
                 POOL["sites"] = r
                 if sites_ok({"sites": r}):
                     break
@@ -2911,7 +2953,7 @@ def _sites_guard(gen, profile, found):
         time.sleep(1.5)
         if GEN[0] != gen or STOP.is_set() or not POOL["active"]:
             return
-        r = cfgscan.site_check(SOCKS, 5)
+        r = cfgscan.site_check(SOCKS, site_tmo_now())
         POOL["sites"] = r
         if sites_ok({"sites": r}):
             return
@@ -2926,7 +2968,7 @@ def _sites_guard(gen, profile, found):
                     time.sleep(3)
                     continue
                 tried.update(c["raw"] for c in cand)
-                good = [x for x in check_many(cand, 1, 5, 8, sites=True) if solid(x) and sites_ok(x)]
+                good = [x for x in check_many(cand, 1, SITE_TMO[0], 8, sites=True) if solid(x) and sites_ok(x)]
                 if not good:
                     continue
                 best = sorted(good, key=lambda x: (-sites_score(x), rk(x)))[0]
@@ -2936,7 +2978,7 @@ def _sites_guard(gen, profile, found):
                     prev = list(POOL["active"])
                     closed_txt = _closed(POOL.get("sites"))
                     sel = start_xray([best], profile)
-                    ms = probe_retry(2, 3)
+                    ms = probe_retry(2, cand_probe_tmo(best))
                     if not ms:
                         start_xray(prev, profile)
                         continue
@@ -2977,7 +3019,7 @@ def standby_sites(gen):
                 time.sleep(5)
                 continue
             okl = []
-            for o, r in zip(todo, check_many(todo, 1, 5, 6, sites=True)):
+            for o, r in zip(todo, check_many(todo, 1, SITE_TMO[0], 6, sites=True)):
                 if r.get("alive"):
                     learn_record(r, "site")
                     if not sites_ok(r):
@@ -3295,6 +3337,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         if profile in SPEEDLIKE:  # برای پیدا کردن سرور واقعاً سریع، نمونه‌ی بیشتری لازمه
             target, up_cap = max(target, 24), max(up_cap, 150)
         tmo = [2.5, 5] if level == 1 else [4, 9]
+        SITE_TMO[0] = 5
         if level >= 2:
             hard_cap *= 2
         seen, cands, origin, fst = set(), [], {}, {"n": 0}
@@ -3348,6 +3391,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 sc = netprobe.timeout_scale(r)
                 if sc > 1:
                     tmo[0], tmo[1] = min(tmo[0] * sc, 9), min(tmo[1] * sc, 18)
+                    SITE_TMO[0] = int(min(max(5, tmo[1]), 10))
                 say(netprobe.summary_fa(r))
                 if netprobe.clock_bad(r):
                     clock[0] = True
@@ -3646,7 +3690,8 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         def soft_pool():
             if TGONLY[0] or conn["t_first"] is None or time.time() - conn["t_first"] < SOFT_AFTER:
                 return []
-            rs = [r for r in list(site_cache.values()) if r.get("alive") and not danger(r) and (r.get("success") or 0) >= 0.67 and r.get("sites")]
+            rs = [r for r in list(site_cache.values()) if r.get("alive") and not danger(r) and (r.get("success") or 0) >= 0.67
+                  and any((r.get("sites") or {}).values())]  # «ناقص» یعنی حداقل یکی از سایت‌ها باز می‌شه؛ دیکشنریِ همه-False هم truthy بود و سرورِ بی‌فایده انتخاب می‌شد
             if len(rs) < 3 and not (fetch_done.is_set() and finished >= pend[0]):
                 return []  # هنوز نمونه‌ی کافی تست سایت نشده
             return sorted(rs, key=lambda r: (-sites_score(r), ping_key(r)))[:3]
@@ -3684,12 +3729,12 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
         def maybe_connect(force=False):
             """اتصال رو توی نخ جدا شروع می‌کنه؛ جستجو و به‌روزرسانی صفحه در همین حین ادامه داره."""
             with conn_lock:  # حلقه‌ی اصلی و نخ‌های prever هر دو صداش می‌زنن؛ بدون قفل ممکن بود دو اتصال هم‌زمان شروع بشه
-                if connected[0] or conn["busy"] or fails[0] >= 4 or STOP.is_set() or not found:
+                if connected[0] or conn["busy"] or fails[0] >= 4 or STOP.is_set() or not found or GEN[0] != pgen:  # pgen: جستجوی تازه‌ای شروع شده؛ این نسخه‌ی قدیمی دیگه وصل نمی‌کنه
                     return
                 if not (force or ready_first()):
                     return
                 now = time.time()
-                if not (any(c["raw"] not in site_cache or (not sites_ok(site_cache[c["raw"]]) and now - site_cache[c["raw"]].get("site_t", 0) > 240)
+                if not (any(c["raw"] not in SITE_INFLIGHT and (c["raw"] not in site_cache or (not sites_ok(site_cache[c["raw"]]) and now - site_cache[c["raw"]].get("site_t", 0) > 240))
                             for c in list(found)) or any(r.get("alive") and sites_ok(r) for r in list(site_cache.values())) or soft_pool()):
                     return  # چیز تازه‌ای برای تست نیست و سرور قابل‌قبولی هم نداریم؛ پیام صفحه الکی عوض نشه
                 conn["busy"] = True
@@ -3707,12 +3752,16 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
             threading.Thread(target=run, daemon=True).start()
 
         def try_connect():
+            if GEN[0] != pgen or STOP.is_set():
+                return
             cands = pick_first()
-            if not cands:
+            if not cands or GEN[0] != pgen:
                 return  # هنوز سروری که همه‌ی سایت‌های لازم رو باز کنه پیدا نشده؛ اتصال به سرور بی‌فایده انجام نمی‌شه
-            res = connect_ladder(cands, profile, 1)
+            res = connect_ladder(cands, profile, 1, alive=lambda: GEN[0] == pgen)
             if not res:
                 fails[0] += 1
+                return
+            if GEN[0] != pgen:  # اتصال وسط راه، جستجوی تازه‌ای جای این رو گرفته؛ چیزی ثبت نمی‌کنیم
                 return
             sel, ms, plain = res
             try:
@@ -3720,11 +3769,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 ip = body.decode("ascii", "ignore").strip()[:45]
             except Exception:
                 ip = ""
-            if STOP.is_set():
+            if STOP.is_set() or GEN[0] != pgen:  # IP گرفتن تا ۱۰ ثانیه طول می‌کشه؛ وسطش شبکه عوض شده و جستجوی تازه شروع شده باشه، روی نشست جدید سوار نشیم
                 return
             if sysproxy:
                 set_proxy(HTTP)
             real = direct_ip()
+            if STOP.is_set() or GEN[0] != pgen:
+                return
             leak = "unknown" if not (real and ip) else ("leak" if ip == real else "ok")
             okset = {k for k, r in site_cache.items() if sites_ok(r)}
             POOL.update(active=sel, reserve=[], standby=sorted([c for c in found if c["raw"] != sel[0]["raw"] and (c["raw"] in okset or c["raw"] not in site_cache)],
@@ -3900,12 +3951,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 r = site_cache.get(c["raw"])
                 return bool(r and time.time() - r.get("site_t", 0) < SITE_FRESH and not sites_ok(r))
             others = [c for c in others if not known_bad(c)]
+            tail = [c for c in ranked[12:40] if c["raw"] != cur[0]["raw"] and not known_bad(c)]  # نه سرور فعال، نه سروری که همین الان سه‌سایتش رد شده
             top = others[:nfix] + random.sample(others[nfix:], min(4, len(others[nfix:]))) + [cur[0]]
             # sites=True: قبلاً این مرحله فقط تأخیر/سرعت می‌سنجید و می‌تونست از سروری که یوتیوب رو باز می‌کرد به سرور سریع‌ترِ بی‌یوتیوب بپره
             if profile in SPEEDLIKE:  # هم‌زمانی کم و نمونه‌ی بلندتر: مقایسه‌ی منصفانه‌ی سرعت
-                ver = check_many(top, ROUNDS.get(profile, 3), 5, 2, speed=True, secs=3.0, sites=True)
+                ver = check_many(top, ROUNDS.get(profile, 3), SITE_TMO[0], 2, speed=True, secs=3.0, sites=True)
             else:
-                ver = check_many(top, ROUNDS.get(profile, 3), 5, 4, speed=True, secs=2.0, sites=True)
+                ver = check_many(top, ROUNDS.get(profile, 3), SITE_TMO[0], 4, speed=True, secs=2.0, sites=True)
             if STOP.is_set():
                 return
             okc = sorted([r for r in ver if solid(r, need_ok()) and sites_ok(r)], key=rk)
@@ -3915,7 +3967,7 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                 res = connect_ladder(okc, profile, POOL_SIZE)
                 if res:
                     set_active(res[0], res[1])
-                    POOL["standby"] = [r for r in okc if r not in res[0]] + ranked[12:40]
+                    POOL["standby"] = [r for r in okc if r not in res[0]] + tail
                 else:
                     start_xray(cur, profile, True)
                     POOL["standby"] = okc
@@ -3925,12 +3977,13 @@ def pipeline(profile, quick, sysproxy, failover_on="stable", auto=False, level=1
                     POOL["active"] = [curv]  # همون سرور فعلی، با اندازه‌گیری‌های دقیق‌تر
                 if best and best["raw"] != cur[0]["raw"] and (not cur_ok or (rk(best) < rk(curv) and cost(best) < 0.75 * cost(curv))):
                     sel = start_xray([best], profile)
-                    ms = probe_retry(3, 4)
+                    ms = probe_retry(3, max(4, cand_probe_tmo(best)))
                     if ms:
                         set_active(sel, ms)
+                        POOL["sites"] = best.get("sites")  # وضعیت سایت‌های سرور تازه، نه سرور قبلی (تا چک بعدی ۶۰ ثانیه‌ای)
                     else:
                         start_xray(cur, profile, True)  # بازگشت به سرور قبلی
-                POOL["standby"] = [r for r in okc if r["raw"] != POOL["active"][0]["raw"]] + ranked[12:40]
+                POOL["standby"] = [r for r in okc if r["raw"] != POOL["active"][0]["raw"]] + tail
             now = time.time()
             for c in POOL["standby"]:
                 c.setdefault("verified_at", now)
@@ -4124,14 +4177,18 @@ def rotate_prev_sessions():
     try:
         for i, n in enumerate(names):
             d = T.load_prev(DATA / n)
-            if d:
+            if d and (d["runs"] or d["incidents"]):  # نشستِ خالی (بدون جستجو/مشکل) تاریخچه‌ی واقعی نیست
                 if i:
                     d["events"] = d["events"][-60:]
                 out.append(d)
         for i in (1, 0):  # prev1 -> prev2، last -> prev1 (قدیمی‌تر اول جابه‌جا بشه تا چیزی روی چیزی ننویسه)
             src = DATA / names[i]
             if src.is_file():
-                os.replace(src, DATA / names[i + 1])
+                d = T.load_prev(src)
+                if d is None or not (d["runs"] or d["incidents"]):  # خراب، یا نشستِ خالی (برنامه باز و بدون اتصال بسته شد): جای نشستِ واقعیِ قدیمی‌تر ننشینه
+                    src.unlink()
+                else:
+                    os.replace(src, DATA / names[i + 1])
     except Exception as e:
         T.err("rotate_prev", e)
     return out

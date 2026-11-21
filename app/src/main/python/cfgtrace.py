@@ -122,32 +122,48 @@ def snapshot(max_events=120):
 TAIL_VER = 1
 
 
+_TAIL_LOCK = __import__("threading").Lock()
+
+
 def save_tail(path, extra=None):
     """ته‌مانده‌ی ردپا (رویدادها، لحظه‌های مشکل، زمان‌بندی جستجوها، شمارنده‌ها) رو روی دیسک می‌نویسه تا بعد از بسته‌شدن برنامه هم
     توی گزارشِ بعدی «نشست قبلی» دیده بشه؛ بدون این، هر بار برنامه بسته می‌شد تاریخچه‌ی قطع‌وصلی‌ها برای همیشه می‌رفت.
-    همون محتوای snapshot() (بدون آدرس/IP) + زمان ذخیره؛ extra (مثلاً نمودار زمانی) فقط عدد و دسته است."""
+    همون محتوای snapshot() (بدون آدرس/IP) + زمان ذخیره؛ extra (مثلاً نمودار زمانی) فقط عدد و دسته است.
+    با قفل: series_loop و shutdown ممکنه هم‌زمان بنویسن."""
+    with _TAIL_LOCK:
+        _save_tail(path, extra)
+
+
+def _save_tail(path, extra):
     import json
     import os
+    tmp = str(path) + ".tmp"
     try:
-        snap = snapshot(max_events=150)
-        snap.pop("perf", None)  # زمان‌سنجی به نمونه‌های بزرگ وابسته‌ست؛ خلاصه‌ش رو جدا نگه می‌داریم
-        snap["perf"] = {k: {kk: vv for kk, vv in v.items() if kk in ("n", "avg", "p50", "p90", "max")} for k, v in snapshot().get("perf", {}).items()}
+        snap = snapshot(max_events=150)  # یک بار (قبلاً دو بار صدا زده می‌شد و هر بار قفل و مرتب‌سازی PERF تکرار می‌شد)
+        perf = snap.pop("perf", None) or {}
+        snap["perf"] = {k: {kk: vv for kk, vv in v.items() if kk in ("n", "avg", "p50", "p90", "max")} for k, v in perf.items()}
         snap.update(ver=TAIL_VER, saved=time.time(), uptime_s=snap.get("now"))
         if extra:
             snap["extra"] = extra
-        tmp = str(path) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())  # بسته‌شدن ناگهانی (اندروید) فایل خالی نذاره
         os.replace(tmp, path)
-    except Exception:
-        pass
+    except Exception as e:
+        err("save_tail", e)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def load_prev(path):
     """نشست قبلی رو برمی‌گردونه (یا None). فقط ساختار و اندازه‌ی معقول قبول می‌شه؛ فایل خراب هیچ‌وقت برنامه رو نمی‌اندازه."""
     import json
     try:
-        d = json.loads(open(path, encoding="utf-8").read())
+        with open(path, encoding="utf-8") as f:
+            d = json.loads(f.read())
         if not isinstance(d, dict) or d.get("ver") != TAIL_VER or not isinstance(d.get("saved"), (int, float)):
             return None
         d["saved_ago_h"] = round((time.time() - d["saved"]) / 3600, 1)
