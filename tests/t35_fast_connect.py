@@ -60,11 +60,20 @@ check("فایل خراب نادیده گرفته می‌شه", T.load_prev(p) is
 
 # چرخش: نشست طولانی با نشست کوتاهِ بعدی گم نمی‌شه
 W.DATA = __import__("pathlib").Path(os.environ["CFG_DATA"])
-T.reset(); T.evt("switch", "نشست اول"); T.save_tail(W.DATA / "trace_last.json")
+T.reset(); T.evt("switch", "نشست اول"); T.incident("switch", why="a"); T.save_tail(W.DATA / "trace_last.json")
 s1 = W.rotate_prev_sessions()
 check("چرخش اول: نشست اول خونده شد", len(s1) == 1 and s1[0]["events"][-1][2] == "نشست اول")
-T.reset(); T.evt("switch", "نشست دوم"); T.save_tail(W.DATA / "trace_last.json")
+T.reset(); T.evt("switch", "نشست دوم"); T.incident("switch", why="b"); T.save_tail(W.DATA / "trace_last.json")
 s2 = W.rotate_prev_sessions()
 check("چرخش دوم: هر دو نشست هست، جدیدترین اول", [x["events"][-1][2] for x in s2] == ["نشست دوم", "نشست اول"])
 check("فایل‌ها چرخیدن", (W.DATA / "trace_prev1.json").is_file() and not (W.DATA / "trace_last.json").is_file())
 print(f"\n{ok} بررسی رد شد")
+
+# نوشتن هم‌زمان ردپا (series_loop + shutdown) فایل رو خراب نمی‌کنه
+import threading
+pp = os.path.join(os.environ["CFG_DATA"], "conc.json")
+ths = [threading.Thread(target=lambda: [T.save_tail(pp, {"series": [{"t": i}]}) for i in range(25)]) for _ in range(6)]
+[t.start() for t in ths]; [t.join() for t in ths]
+d2 = T.load_prev(pp)
+print(("OK   " if d2 else "FAIL ") + "نوشتن هم‌زمان ردپا فایل سالم می‌ذاره")
+assert d2

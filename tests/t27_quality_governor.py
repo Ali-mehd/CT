@@ -23,17 +23,23 @@ def setup():
     W.sites_ok = lambda c: True; W.standby_ok = lambda: list(W.POOL["standby"]); W.flaky = lambda c: 0; W.eff = lambda c: c["lat"]
     # ترتیب امتحان رو با lat تعیین کن (کمترین اول)
     for i, c in enumerate(W.POOL["standby"]): c["lat"] = 100 + i
+    # پیش‌سنجش روی xray موقت (تونل دست نمی‌خوره): lat تازه‌ی هر جایگزین همون پینگ واقعیشه
+    W.check_many = lambda cs, *a, **k: [dict(c, alive=True, success=1.0, lat=real[c["host"]]) for c in cs]
     return act, log
 act, log = setup()
 W._quality_switch(W.GEN[0], "auto", 3000)
-assert log == ["60.0.0.2", "60.0.0.1", "60.0.0.3"], log             # ۲ بهتر نبود ← برگشت به ۱؛ ۳ بهتر بود ← موند
-assert W.POOL["active"][0]["host"] == "60.0.0.3" and any(c["host"] == "60.0.0.1" for c in W.POOL["standby"])
+assert log == ["60.0.0.4"], log             # ۲ (پینگ ۲۹۰۰) در پیش‌سنجش رد شد بدون قطع تونل؛ بهترین (۴، پینگ ۳۵۰) اول امتحان شد و موند
+assert W.POOL["active"][0]["host"] == "60.0.0.4" and any(c["host"] == "60.0.0.1" for c in W.POOL["standby"])
 assert W.QUAL["cool"] > time.time() and "بهتر" in W.S["note"]
 act, log = setup()
-for c in W.POOL["standby"]: pass
-W.probe_retry = lambda *a, **k: 2900.0; W.probe = lambda t=3.0: 2900.0   # هیچ‌کدوم بهتر نیست
+W.check_many = lambda cs, *a, **k: [dict(c, alive=True, success=1.0, lat=2900) for c in cs]   # هیچ‌کدوم واضحاً بهتر نیست
 W._quality_switch(W.GEN[0], "auto", 3000)
+assert not log, "پیش‌سنجش همه رو رد کرد؛ تونل نباید یک بار هم عوض بشه"
 assert W.POOL["active"][0]["host"] == "60.0.0.1" and "بهتر نبودن" in W.S["note"] and W.POOL.get("refill_fast", 0) > time.time()
+act, log = setup()   # پیش‌سنجش خوشبین بود ولی پینگ واقعیِ بعد از اتصال بهتر نیست ← برمی‌گرده
+W.probe_retry = lambda *a, **k: 2900.0; W.probe = lambda t=3.0: 2900.0
+W._quality_switch(W.GEN[0], "auto", 3000)
+assert log[0] == "60.0.0.4" and log[-1] == "60.0.0.1" and W.POOL["active"][0]["host"] == "60.0.0.1"
 act, log = setup(); W.POOL["standby"] = []
 W._quality_switch(W.GEN[0], "auto", 3000)
 assert not log and "جایگزین تأییدشده‌ای ندارم" in W.S["note"]
